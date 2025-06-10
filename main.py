@@ -61,3 +61,16 @@ if __name__ == "__main__":
     signal.signal(signal.SIGTERM, handle_exit)
     
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    
+    
+    
+    """
+     Vaai check it out -----
+     
+     1. There is showing an error getting list object - showing list object has no attribute 'get'
+     2. Reduce the Time consuming part. delete the cache and see the results. Does there any imporvement in the time consuming part??
+     
+     3. Check the VORP calculation is it showing any hellucinated result or, not please check it out.
+    
+    
+    """
