@@ -546,15 +546,15 @@ class LLMService:
             # If there are lists, report their sizes
             for key in keys:
                 if isinstance(data[key], list):
-                    summary[f"{key}_count"] = len(data[key])
-                    # Sample a few items if they're dictionaries
+                    summary[f"{key}_count"] = len(data[key])                    # Sample a few items if they're dictionaries
                     if data[key] and isinstance(data[key][0], dict):
                         sample_keys = list(data[key][0].keys())[:5]
                         summary[f"{key}_contains"] = sample_keys
         
         return summary
 
-    def _summarize_fantasy_rankings(self, rankings_data: Union[List[Dict[str, Any]], Dict[str, Any]]) -> Union[List[Dict[str, Any]], Dict[str, Any]]:        """
+    def _summarize_fantasy_rankings(self, rankings_data: Union[List[Dict[str, Any]], Dict[str, Any]]) -> Union[List[Dict[str, Any]], Dict[str, Any]]:
+        """
         Summarize fantasy rankings data (draft rankings or weekly rankings)
         Can handle both list and dictionary responses from the Fantasy Nerds API
         """
