@@ -101,10 +101,9 @@ class LLMService:
             messages.append({"role": "system", "content": data_instructions})
             
             # Format and add the summarized context data
-            context_str = f"{json.dumps(summarized_data, indent=2)}"
-            # Limit context string to avoid payload too large - reduced for GPT's token limit
-            if len(context_str) > 15000:  # Reduced size for GPT's token limit
-                context_str = context_str[:15000] + "...[additional data truncated for size]"
+            context_str = f"{json.dumps(summarized_data, indent=2)}"            # Limit context string to avoid payload too large - increased for better VORP calculations
+            if len(context_str) > 25000:  # Increased size to allow more player data for VORP calculations
+                context_str = context_str[:25000] + "...[additional data truncated for size]"
                 
             messages.append({"role": "system", "content": context_str})
             print(f"Context data size after summary: {len(context_str)} characters")
@@ -182,14 +181,21 @@ class LLMService:
                     
             if "boxscore" in data:
                 summarized["boxscore"] = self._summarize_boxscore(data["boxscore"])
-                
-            # Handle draft rankings data
+                  # Handle draft rankings data
             if "draft_rankings" in data:
                 summarized["draft_rankings"] = self._summarize_fantasy_rankings(data["draft_rankings"])
-                
+                  
             # Handle weekly rankings data  
             if "weekly_rankings" in data:
                 summarized["weekly_rankings"] = self._summarize_fantasy_rankings(data["weekly_rankings"])
+                
+            # Handle ROS projections data (position-keyed structure)
+            if "ros_projections" in data:
+                summarized["ros_projections"] = self._summarize_ros_projections(data["ros_projections"])
+                
+            # Handle news data
+            if "news" in data:
+                summarized["news"] = self._summarize_news_data(data["news"])
                 
             return summarized
         except Exception as e:
@@ -548,28 +554,19 @@ class LLMService:
         
         return summary
 
-    def _summarize_fantasy_rankings(self, rankings_data: Union[List[Dict[str, Any]], Dict[str, Any]]) -> Union[List[Dict[str, Any]], Dict[str, Any]]:
-        """
+    def _summarize_fantasy_rankings(self, rankings_data: Union[List[Dict[str, Any]], Dict[str, Any]]) -> Union[List[Dict[str, Any]], Dict[str, Any]]:        """
         Summarize fantasy rankings data (draft rankings or weekly rankings)
         Can handle both list and dictionary responses from the Fantasy Nerds API
         """
-        # Debug output to see the raw data
-        print("\n=== FANTASY RANKINGS DATA ===")
-        print(f"Data type: {type(rankings_data)}")
-        if isinstance(rankings_data, list) and rankings_data:
-            print(f"First item sample: {rankings_data[0]}")
-        elif isinstance(rankings_data, dict) and rankings_data:
-            print(f"Keys: {list(rankings_data.keys())}")
-        print("============================\n")
-            
         if not rankings_data:
             return {"summary": "No rankings data available"}
             
         try:
             # Handle if the response is a list of players
             if isinstance(rankings_data, list):
-                # Take only the top 15 players to limit context size
-                top_players = rankings_data[:15]
+                print(f"DEBUG: Handling list format with {len(rankings_data)} items")
+                # Take more players to enable VORP calculations (need ~25 for QB position analysis)
+                top_players = rankings_data[:25]
                 summarized = []
                 
                 for player in top_players:
@@ -581,14 +578,17 @@ class LLMService:
                         "rank": player.get("rank", player.get("position_rank", 0)),
                         "bye_week": player.get("bye_week", "")
                     }
-                    
-                    # Include projected points if available (common in weekly rankings)
+                      # Include projected points if available (common in weekly rankings)
                     if "standard_points" in player:
                         player_summary["projected_points"] = {
                             "standard": player.get("standard_points", 0),
                             "ppr": player.get("ppr_points", 0),
                             "half_ppr": player.get("half_ppr_points", 0)
                         }
+                    
+                    # Include projected points if available (critical for VORP calculations)
+                    if "proj_pts" in player:
+                        player_summary["projected_points"] = player.get("proj_pts", 0)
                     
                     # Include ADP data if available (common in draft rankings)
                     if "adp" in player:
@@ -604,22 +604,31 @@ class LLMService:
                 
             # Handle if the response is a dictionary with positions as keys
             elif isinstance(rankings_data, dict):
+                print(f"DEBUG: Handling dict format")
                 summarized = {}
                 
                 # Handle common dictionary structures in fantasy APIs
                 # Case 1: Position-keyed dictionary (e.g., {"QB": [...], "RB": [...], ...})
                 if any(pos in rankings_data for pos in ["QB", "RB", "WR", "TE", "K", "DEF"]):
+                    print(f"DEBUG: Case 1 - Position-keyed dictionary detected")
                     for position, players in rankings_data.items():
                         if isinstance(players, list) and players:
-                            # For each position, take top 5 players
+                            # For QBs, take more players to allow VORP calculations (need ~25 for replacement level)
+                            # For other positions, take more players for better analysis  
+                            max_players = 25 if position == "QB" else 15
                             summarized[position] = []
-                            for player in players[:5]:
+                            for player in players[:max_players]:
                                 if isinstance(player, dict):
                                     player_summary = {
                                         "name": player.get("display_name", player.get("name", "")),
                                         "team": player.get("team", ""),
                                         "rank": player.get("rank", player.get("position_rank", 0))
                                     }
+                                    
+                                    # Include projected points if available (critical for VORP calculations)
+                                    if "proj_pts" in player:
+                                        player_summary["projected_points"] = player.get("proj_pts", 0)
+                                    
                                     summarized[position].append(player_summary)
                                 else:
                                     # Handle unexpected player data format
@@ -627,20 +636,28 @@ class LLMService:
                 
                 # Case 2: Data is in a "data" key
                 elif "data" in rankings_data and isinstance(rankings_data["data"], (list, dict)):
+                    print(f"DEBUG: Case 2 - Data key detected")
                     return self._summarize_fantasy_rankings(rankings_data["data"])
-                    
-                # Case 3: Other dictionary structure - extract key metadata
+                      # Case 3: Other dictionary structure - extract key metadata
                 else:
+                    print(f"DEBUG: Case 3 - Other dictionary structure")
                     summarized = {
-                        "metadata": {k: v for k, v in rankings_data.items() if k != "players" and not isinstance(v, (list, dict))},
+                        "metadata": {k: v for k, v in rankings_data.items() if k not in ["players", "data"] and not isinstance(v, (list, dict))},
                         "players_sample": []
                     }
-                    
-                    # Try to find player data in any list field
-                    for key, value in rankings_data.items():
-                        if isinstance(value, list) and value and isinstance(value[0], dict):
-                            summarized["players_sample"] = self._summarize_fantasy_rankings(value[:10])
-                            break
+                      # First check for "players" key specifically (common in Fantasy Nerds API)
+                    if "players" in rankings_data and isinstance(rankings_data["players"], list):
+                        print(f"DEBUG: Found 'players' key with {len(rankings_data['players'])} players")
+                        # Take more players for better VORP analysis
+                        summarized["players_sample"] = self._summarize_fantasy_rankings(rankings_data["players"][:30])
+                    else:
+                        # Try to find player data in any list field
+                        for key, value in rankings_data.items():
+                            if isinstance(value, list) and value and isinstance(value[0], dict):
+                                print(f"DEBUG: Found player data in '{key}' field with {len(value)} items")
+                                # Take more data for better analysis
+                                summarized["players_sample"] = self._summarize_fantasy_rankings(value[:30])
+                                break
                 
                 return summarized
             else:
@@ -649,5 +666,95 @@ class LLMService:
         except Exception as e:
             print(f"Error summarizing fantasy rankings: {e}")
             return {"summary": "Rankings data available but could not be summarized", "error": str(e)}
+
+    def _summarize_news_data(self, news_data: Union[List[Dict[str, Any]], Dict[str, Any]]) -> Union[List[Dict[str, Any]], Dict[str, Any]]:
+        """
+        Summarize news data (could be a list of articles or a dict with metadata)
+        """
+        try:
+            if isinstance(news_data, list):
+                # Take only the first 5 news articles to limit context size
+                top_articles = news_data[:5]
+                summarized = []
+                
+                for article in top_articles:
+                    if not isinstance(article, dict):
+                        continue
+                        
+                    article_summary = {
+                        "headline": article.get("article_headline", ""),
+                        "date": article.get("article_date", ""),
+                        "author": article.get("article_author", ""),
+                        "excerpt": article.get("article_excerpt", "")[:200] + "..." if len(article.get("article_excerpt", "")) > 200 else article.get("article_excerpt", ""),
+                        "teams": article.get("teams", [])
+                    }
+                    summarized.append(article_summary)
+                
+                return summarized
+            else:
+                # If it's a dict, return a summary
+                if isinstance(news_data, dict):
+                    return {"summary": "News data available", "count": len(news_data.get("articles", []))}
+                else:
+                    return {"summary": "News data available but in unexpected format"}
+        except Exception as e:
+            print(f"Error summarizing news data: {e}")
+            return {"summary": "News data available but could not be summarized", "error": str(e)}
+
+    def _summarize_ros_projections(self, ros_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Summarize ROS (Rest of Season) projections data specifically
+        ROS data typically has structure: {"season": 2025, "projections": {"QB": [...], "RB": [...], ...}}
+        """
+        if not ros_data:
+            return {"summary": "No ROS projections data available"}
+            
+        try:
+            summarized = {
+                "season": ros_data.get("season", ""),
+                "metadata": {k: v for k, v in ros_data.items() if k not in ["projections", "season"] and not isinstance(v, dict)}
+            }
+              # Handle the main projections data
+            if "projections" in ros_data and isinstance(ros_data["projections"], dict):
+                projections = ros_data["projections"]
+                
+                # Summarize each position's projections
+                for position, players in projections.items():
+                    if isinstance(players, list) and players:
+                        # For VORP calculations, we need more QBs to see replacement level (typically QB20-24)
+                        # For other positions, still take more for better analysis
+                        max_players = 30 if position == "QB" else 20
+                        
+                        position_summary = []
+                        for player in players[:max_players]:
+                            if isinstance(player, dict):
+                                player_summary = {
+                                    "name": player.get("name", ""),
+                                    "team": player.get("team", ""),
+                                    "position": player.get("position", position)
+                                }
+                                
+                                # Include projected points (critical for VORP calculations)
+                                if "proj_pts" in player:
+                                    player_summary["projected_points"] = player.get("proj_pts", 0)
+                                
+                                # Include other key stats that might be useful
+                                for stat in ["passing_yards", "passing_touchdowns", "rushing_yards", "rushing_touchdowns", "receiving_yards", "receiving_touchdowns"]:
+                                    if stat in player:
+                                        player_summary[stat] = player.get(stat, 0)
+                                        
+                                position_summary.append(player_summary)
+                        
+                        summarized[position] = position_summary
+                        
+            else:
+                # Fallback: treat the entire ROS data as fantasy rankings
+                return self._summarize_fantasy_rankings(ros_data)
+                
+            return summarized
+            
+        except Exception as e:
+            print(f"Error summarizing ROS projections: {e}")
+            return {"summary": "ROS projections data available but could not be summarized", "error": str(e)}
 
 llm_service = LLMService()

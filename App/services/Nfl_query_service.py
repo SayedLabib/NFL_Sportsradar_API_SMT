@@ -208,15 +208,19 @@ class NFLQueryService:
                     if last_name in query.lower():
                         params["player"] = full_name
                         break
-            
-        # Classify query type
+              # Classify query type
         if any(term in query for term in ["ranking", "rank", "best", "top", "stats", "statistics", "projections"]):
             return "player_rankings", params
             
         if any(term in query for term in ["matchup", "vs", "versus", "against", "playing against", "face off", "game between"]):
             return "matchups", params
             
-        if any(term in query for term in ["injury", "injured", "hurt", "sidelined", "out", "questionable", "probable"]):
+        # Check for VORP and ROS queries FIRST (before injury check to avoid "Hurts" matching "hurt")
+        if any(term in query for term in ["rest of season", "ros", "rest-of-season", "remaining games", "future projections", "vorp", "value over replacement", "replacement player"]):
+            return "ros_projections", params
+              # Use word boundaries to avoid matching player names like "Hurts"
+        injury_terms = ["injury", "injured", r"\bhurt\b", "sidelined", "out", "questionable", "probable"]
+        if any(re.search(term if '\\b' in term else r'\b' + re.escape(term) + r'\b', query) for term in injury_terms):
             return "injuries", params
             
         if any(term in query for term in ["schedule", "upcoming", "games", "playing", "when", "calendar"]):
@@ -233,9 +237,6 @@ class NFLQueryService:
             
         if any(term in query for term in ["adds", "drops", "pickups", "waiver", "transactions"]):
             return "adds_drops", params
-            
-        if any(term in query for term in ["rest of season", "ros", "rest-of-season", "remaining games", "future projections"]):
-            return "ros_projections", params
             
         # New Fantasy Nerds API specific query types
         if any(term in query for term in ["draft", "drafting", "draft pick", "adp", "average draft position"]):

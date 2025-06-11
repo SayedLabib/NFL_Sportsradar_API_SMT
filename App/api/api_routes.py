@@ -311,7 +311,9 @@ async def get_playoff_projections(week: int):
 @router.post("/query", response_model=NFLQueryResponse, summary="Ask a question about NFL data")
 async def ask_nfl_question(query: NFLQuery):
     """
-    Ask a natural language question about NFL data and get an AI-powered response.
+    Ask a natural language question about NFL data and get an AI-powered response with concurrent API calls for optimal performance.
+    
+    This endpoint uses parallel API calls to fetch data, resulting in significantly faster response times.
     
     Examples:
     - "Who are the top quarterbacks this season?"
