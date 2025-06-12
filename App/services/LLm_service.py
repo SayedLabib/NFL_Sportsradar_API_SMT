@@ -139,8 +139,7 @@ class LLMService:
     def _summarize_context_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Summarize the context data to a reasonable size for the LLM API, 
-        handling combined data from multiple endpoints
-        """
+        handling combined data from multiple endpoints        """
         # Create a container for the summarized data
         summarized = {
             "query_type": data.get("query_type", "unknown"),
@@ -192,22 +191,123 @@ class LLMService:
             # Handle ROS projections data (position-keyed structure)
             if "ros_projections" in data:
                 summarized["ros_projections"] = self._summarize_ros_projections(data["ros_projections"])
-                
-            # Handle news data
+                  # Handle news data
             if "news" in data:
                 summarized["news"] = self._summarize_news_data(data["news"])
                 
+            # Handle ADP data
+            if "adp" in data:
+                summarized["adp"] = self._summarize_fantasy_rankings(data["adp"])
+                
+            # Handle player tiers data
+            if "player_tiers" in data:
+                summarized["player_tiers"] = self._summarize_fantasy_rankings(data["player_tiers"])
+                
+            # Handle auction values data
+            if "auction_values" in data:
+                summarized["auction_values"] = self._summarize_fantasy_rankings(data["auction_values"])
+                
+            # Handle best ball rankings data
+            if "best_ball" in data:
+                summarized["best_ball"] = self._summarize_fantasy_rankings(data["best_ball"])
+                
+            # Handle dynasty rankings data
+            if "dynasty" in data:
+                summarized["dynasty"] = self._summarize_fantasy_rankings(data["dynasty"])
+                
+            # Handle fantasy leaders data
+            if "fantasy_leaders" in data:
+                summarized["fantasy_leaders"] = self._summarize_fantasy_rankings(data["fantasy_leaders"])
+                
+            # Handle players data
+            if "players" in data:
+                summarized["players"] = self._summarize_players_data(data["players"])
+                  # Handle depth charts data
+            if "depth" in data:
+                summarized["depth"] = self._summarize_depth_charts(data["depth"])
+            elif "depth_charts" in data:
+                summarized["depth"] = self._summarize_depth_charts(data["depth_charts"])
+                
+            # Handle weekly projections data
+            if "weekly_projections" in data:
+                summarized["weekly_projections"] = self._summarize_fantasy_rankings(data["weekly_projections"])
+                
+            # Handle defensive rankings data
+            if "defense_rankings" in data:
+                summarized["defense_rankings"] = self._summarize_fantasy_rankings(data["defense_rankings"])
+                
+            # Handle bye weeks data
+            if "bye_weeks" in data:
+                summarized["bye_weeks"] = self._summarize_bye_weeks(data["bye_weeks"])
+                
+            # Handle add/drops data
+            if "add_drops" in data:
+                summarized["add_drops"] = self._summarize_add_drops(data["add_drops"])
+                
+            # Handle weather data
+            if "weather" in data:
+                summarized["weather"] = self._summarize_weather_data(data["weather"])
+                
+            # Handle draft projections data
+            if "draft_projections" in data:
+                summarized["draft_projections"] = self._summarize_fantasy_rankings(data["draft_projections"])
+                
+            # Handle DFS data
+            if "dfs" in data:
+                summarized["dfs"] = self._summarize_dfs_data(data["dfs"])
+                
+            # Handle DFS slates data
+            if "dfs_slates" in data:
+                summarized["dfs_slates"] = self._summarize_dfs_slates(data["dfs_slates"])
+                
+            # Handle IDP draft data
+            if "idp_draft" in data:
+                summarized["idp_draft"] = self._summarize_fantasy_rankings(data["idp_draft"])
+                
+            # Handle IDP weekly data
+            if "idp_weekly" in data:
+                summarized["idp_weekly"] = self._summarize_fantasy_rankings(data["idp_weekly"])
+                
+            # Handle NFL picks data
+            if "nfl_picks" in data:
+                summarized["nfl_picks"] = self._summarize_nfl_picks(data["nfl_picks"])                
             return summarized
         except Exception as e:
             print(f"Error during data summarization: {e}")
+            print(f"DEBUG: Error traceback: {type(e).__name__}: {str(e)}")
+            # Let's see which data key was being processed
+            import traceback
+            traceback.print_exc()
             return {"summary": "Data available but could not be summarized due to an error",
                     "error": str(e)}
 
-    def _summarize_league_structure(self, league_data: Dict[str, Any]) -> Dict[str, Any]:
+    def _summarize_league_structure(self, league_data: Union[List[Dict[str, Any]], Dict[str, Any]]) -> Dict[str, Any]:
         """Summarize league structure data"""
         if not league_data:
             return {}
+        
+        # Handle if league_data is a list (like teams endpoint)
+        if isinstance(league_data, list):
+            summary = {
+                "league_name": "NFL",
+                "teams_count": len(league_data),
+                "teams_sample": []
+            }
             
+            # Take a sample of teams
+            for team in league_data[:10]:  # Limit to 10 teams
+                if isinstance(team, dict):
+                    summary["teams_sample"].append({
+                        "name": team.get("name", ""),
+                        "market": team.get("market", ""),
+                        "alias": team.get("alias", ""),
+                        "conference": team.get("conference", ""),
+                        "division": team.get("division", "")
+                    })
+            
+            return summary
+            
+        # Handle if league_data is a dict (hierarchical structure)
         summary = {
             "league_name": league_data.get("name", "NFL"),
             "conferences": []
@@ -383,8 +483,7 @@ class LLMService:
                                 "wins": team.get("wins", 0),
                                 "losses": team.get("losses", 0),
                                 "ties": team.get("ties", 0),
-                                "win_pct": team.get("win_pct", 0),
-                                "points_for": team.get("points_for", 0),
+                                "win_pct": team.get("win_pct", 0),                                "points_for": team.get("points_for", 0),
                                 "points_against": team.get("points_against", 0)
                             })
                         
@@ -396,48 +495,69 @@ class LLMService:
         except Exception as e:
             print(f"Error summarizing standings: {e}")
             return {"summary": "Standings data available but could not be summarized"}
-    
-    def _summarize_schedule_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
+
+    def _summarize_schedule_data(self, data: Union[List[Dict[str, Any]], Dict[str, Any]]) -> Dict[str, Any]:
         """Summarize schedule data to essential games info"""
-        summarized = {
-            "year": data.get("year", ""),
-            "type": data.get("type", ""),
-            "games": []
-        }
-        
         try:
-            # Take only the first 10 games to limit size
-            games = data.get("games", [])[:10]
-            for game in games:
-                game_summary = {
-                    "id": game.get("id", ""),
-                    "status": game.get("status", ""),
-                    "scheduled": game.get("scheduled", ""),
-                    "home_team": {
-                        "name": game.get("home", {}).get("name", ""),
-                        "alias": game.get("home", {}).get("alias", "")
-                    },
-                    "away_team": {
-                        "name": game.get("away", {}).get("name", ""),
-                        "alias": game.get("away", {}).get("alias", "")
-                    }
+            # Handle if the data is a list directly (some Fantasy Nerds endpoints return lists)
+            if isinstance(data, list):
+                summarized = {
+                    "year": "current",
+                    "type": "regular",
+                    "games": []
                 }
-                summarized["games"].append(game_summary)
+                # If it's a list, treat it as a list of games
+                games = data[:10]  # Limit to 10 games
+            else:
+                # Handle dictionary format
+                summarized = {
+                    "year": data.get("year", ""),
+                    "type": data.get("type", ""),
+                    "games": []
+                }
+                # Take only the first 10 games to limit size
+                games = data.get("games", [])[:10]
+            
+            for game in games:
+                if isinstance(game, dict):
+                    game_summary = {
+                        "id": game.get("id", ""),
+                        "status": game.get("status", ""),
+                        "scheduled": game.get("scheduled", ""),
+                        "home_team": {
+                            "name": game.get("home", {}).get("name", ""),
+                            "alias": game.get("home", {}).get("alias", "")
+                        },
+                        "away_team": {
+                            "name": game.get("away", {}).get("name", ""),
+                            "alias": game.get("away", {}).get("alias", "")
+                        }
+                    }
+                    summarized["games"].append(game_summary)
             
             return summarized
         except Exception as e:
             print(f"Error summarizing schedule data: {e}")
             return {"summary": "Schedule data available but could not be summarized"}
 
-    def _summarize_injury_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
+    def _summarize_injury_data(self, data: Union[List[Dict[str, Any]], Dict[str, Any]]) -> Dict[str, Any]:
         """Summarize injury report data"""
-        summarized = {
-            "week": data.get("week", ""),
-            "teams_with_injuries": []
-        }
-        
         try:
-            teams = data.get("teams", [])[:10]  # Limit to 10 teams
+            # Handle if the data is a list directly (some Fantasy Nerds endpoints return lists)
+            if isinstance(data, list):
+                summarized = {
+                    "week": "current",
+                    "teams_with_injuries": []
+                }
+                # If it's a list, treat it as a list of teams or players
+                teams = data[:10]  # Limit to 10 teams
+            else:
+                # Handle dictionary format
+                summarized = {
+                    "week": data.get("week", ""),
+                    "teams_with_injuries": []
+                }
+                teams = data.get("teams", [])[:10]  # Limit to 10 teams
             for team in teams:
                 team_summary = {
                     "name": team.get("name", ""),
@@ -558,18 +678,28 @@ class LLMService:
         Summarize fantasy rankings data (draft rankings or weekly rankings)
         Can handle both list and dictionary responses from the Fantasy Nerds API
         """
+        print(f"DEBUG: _summarize_fantasy_rankings called with data type: {type(rankings_data)}")
+        if isinstance(rankings_data, list) and rankings_data:
+            print(f"DEBUG: First list item type: {type(rankings_data[0])}")
+        elif isinstance(rankings_data, dict):
+            print(f"DEBUG: Dict keys: {list(rankings_data.keys())}")
+            
         if not rankings_data:
             return {"summary": "No rankings data available"}
             
         try:
             # Handle if the response is a list of players
             if isinstance(rankings_data, list):
-                print(f"DEBUG: Handling list format with {len(rankings_data)} items")
-                # Take more players to enable VORP calculations (need ~25 for QB position analysis)
+                print(f"DEBUG: Handling list format with {len(rankings_data)} items")                # Take more players to enable VORP calculations (need ~25 for QB position analysis)
                 top_players = rankings_data[:25]
                 summarized = []
                 
                 for player in top_players:
+                    # Ensure player is a dictionary before trying to access its attributes
+                    if not isinstance(player, dict):
+                        print(f"DEBUG: Skipping non-dict player data: {type(player)} - {str(player)[:100]}")
+                        continue
+                        
                     player_summary = {
                         "id": player.get("player_id", ""),
                         "name": player.get("display_name", player.get("name", "")),
@@ -654,12 +784,10 @@ class LLMService:
                         # Try to find player data in any list field
                         for key, value in rankings_data.items():
                             if isinstance(value, list) and value and isinstance(value[0], dict):
-                                print(f"DEBUG: Found player data in '{key}' field with {len(value)} items")
-                                # Take more data for better analysis
+                                print(f"DEBUG: Found player data in '{key}' field with {len(value)} items")                                # Take more data for better analysis
                                 summarized["players_sample"] = self._summarize_fantasy_rankings(value[:30])
                                 break
-                
-                return summarized
+                        return summarized
             else:
                 # Unknown format
                 return {"summary": "Rankings data available but in unexpected format"}
@@ -693,15 +821,16 @@ class LLMService:
                 return summarized
             else:
                 # If it's a dict, return a summary
-                if isinstance(news_data, dict):
-                    return {"summary": "News data available", "count": len(news_data.get("articles", []))}
+                if isinstance(news_data, dict):                    # Handle dict format (if news data is wrapped in a dict)
+                    articles_count = len(news_data.get("articles", [])) if "articles" in news_data else len(news_data)
+                    return {"summary": "News data available", "count": articles_count}
                 else:
                     return {"summary": "News data available but in unexpected format"}
         except Exception as e:
             print(f"Error summarizing news data: {e}")
             return {"summary": "News data available but could not be summarized", "error": str(e)}
 
-    def _summarize_ros_projections(self, ros_data: Dict[str, Any]) -> Dict[str, Any]:
+    def _summarize_ros_projections(self, ros_data: Union[List[Dict[str, Any]], Dict[str, Any]]) -> Dict[str, Any]:
         """
         Summarize ROS (Rest of Season) projections data specifically
         ROS data typically has structure: {"season": 2025, "projections": {"QB": [...], "RB": [...], ...}}
@@ -710,51 +839,397 @@ class LLMService:
             return {"summary": "No ROS projections data available"}
             
         try:
-            summarized = {
-                "season": ros_data.get("season", ""),
-                "metadata": {k: v for k, v in ros_data.items() if k not in ["projections", "season"] and not isinstance(v, dict)}
-            }
-              # Handle the main projections data
-            if "projections" in ros_data and isinstance(ros_data["projections"], dict):
-                projections = ros_data["projections"]
-                
-                # Summarize each position's projections
-                for position, players in projections.items():
-                    if isinstance(players, list) and players:
-                        # For VORP calculations, we need more QBs to see replacement level (typically QB20-24)
-                        # For other positions, still take more for better analysis
-                        max_players = 30 if position == "QB" else 20
-                        
-                        position_summary = []
-                        for player in players[:max_players]:
-                            if isinstance(player, dict):
-                                player_summary = {
-                                    "name": player.get("name", ""),
-                                    "team": player.get("team", ""),
-                                    "position": player.get("position", position)
-                                }
-                                
-                                # Include projected points (critical for VORP calculations)
-                                if "proj_pts" in player:
-                                    player_summary["projected_points"] = player.get("proj_pts", 0)
-                                
-                                # Include other key stats that might be useful
-                                for stat in ["passing_yards", "passing_touchdowns", "rushing_yards", "rushing_touchdowns", "receiving_yards", "receiving_touchdowns"]:
-                                    if stat in player:
-                                        player_summary[stat] = player.get(stat, 0)
-                                        
-                                position_summary.append(player_summary)
-                        
-                        summarized[position] = position_summary
-                        
-            else:
-                # Fallback: treat the entire ROS data as fantasy rankings
+            # Handle if the data is a list directly (some Fantasy Nerds endpoints return lists)
+            if isinstance(ros_data, list):
+                # If it's a list, treat it as fantasy rankings
                 return self._summarize_fantasy_rankings(ros_data)
-                
-            return summarized
+            else:
+                # Handle dictionary format
+                summarized = {
+                    "season": ros_data.get("season", ""),
+                    "metadata": {k: v for k, v in ros_data.items() if k not in ["projections", "season"] and not isinstance(v, dict)}
+                }
+                  # Handle the main projections data
+                if "projections" in ros_data and isinstance(ros_data["projections"], dict):
+                    projections = ros_data["projections"]
+                    
+                    # Summarize each position's projections
+                    for position, players in projections.items():
+                        if isinstance(players, list) and players:
+                            # For VORP calculations, we need more QBs to see replacement level (typically QB20-24)
+                            # For other positions, still take more for better analysis
+                            max_players = 30 if position == "QB" else 20
+                            
+                            position_summary = []
+                            for player in players[:max_players]:
+                                if isinstance(player, dict):
+                                    player_summary = {
+                                        "name": player.get("name", ""),
+                                        "team": player.get("team", ""),
+                                        "position": player.get("position", position)
+                                    }
+                                    
+                                    # Include projected points (critical for VORP calculations)
+                                    if "proj_pts" in player:
+                                        player_summary["projected_points"] = player.get("proj_pts", 0)
+                                    
+                                    # Include other key stats that might be useful
+                                    for stat in ["passing_yards", "passing_touchdowns", "rushing_yards", "rushing_touchdowns", "receiving_yards", "receiving_touchdowns"]:
+                                        if stat in player:
+                                            player_summary[stat] = player.get(stat, 0)
+                                            
+                                    position_summary.append(player_summary)
+                            
+                            summarized[position] = position_summary
+                            
+                else:
+                    # Fallback: treat the entire ROS data as fantasy rankings
+                    return self._summarize_fantasy_rankings(ros_data)
+                    
+                return summarized
             
         except Exception as e:
             print(f"Error summarizing ROS projections: {e}")
             return {"summary": "ROS projections data available but could not be summarized", "error": str(e)}
+
+    def _summarize_players_data(self, players_data: Union[List[Dict[str, Any]], Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Summarize players data from the players endpoint
+        """
+        try:
+            if isinstance(players_data, list):
+                # If it's a list of players directly
+                summarized = {
+                    "players_count": len(players_data),
+                    "sample_players": []
+                }
+                
+                # Take a sample of players (limit to 20 for context size)
+                for player in players_data[:20]:
+                    if isinstance(player, dict):
+                        player_summary = {
+                            "name": player.get("display_name", player.get("name", "")),
+                            "team": player.get("team", ""),
+                            "position": player.get("position", ""),
+                            "jersey_number": player.get("jersey", ""),
+                            "status": player.get("status", "")
+                        }
+                        summarized["sample_players"].append(player_summary)
+                
+                return summarized
+            else:
+                # If it's a dictionary structure
+                if "players" in players_data:
+                    return self._summarize_players_data(players_data["players"])
+                else:
+                    return {"summary": "Players data available but in unexpected format"}
+        except Exception as e:
+            print(f"Error summarizing players data: {e}")
+            return {"summary": "Players data available but could not be summarized", "error": str(e)}
+
+    def _summarize_depth_charts(self, depth_data: Union[List[Dict[str, Any]], Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Summarize depth chart data
+        """
+        print(f"DEBUG: _summarize_depth_charts called with data type: {type(depth_data)}")
+        
+        try:
+            if isinstance(depth_data, list):
+                print(f"DEBUG: Processing list format with {len(depth_data)} teams")
+                # If it's a list of teams
+                summarized = {
+                    "teams_count": len(depth_data),
+                    "teams": []
+                }
+                
+                for i, team in enumerate(depth_data[:5]):  # Limit to 5 teams
+                    print(f"DEBUG: Processing team {i}: {list(team.keys()) if isinstance(team, dict) else type(team)}")
+                    if isinstance(team, dict):
+                        team_summary = {
+                            "team": team.get("team", team.get("name", team.get("alias", ""))),
+                            "positions": {}
+                        }
+                        
+                        # Check if this is Detroit Lions
+                        team_identifier = team.get("team", team.get("name", team.get("alias", ""))).lower()
+                        if "detroit" in team_identifier or "lions" in team_identifier:
+                            print(f"DEBUG: Found Detroit Lions team data: {team}")
+                        
+                        # Sample a few positions
+                        for key, value in team.items():
+                            if key not in ["team", "name", "alias", "id"] and isinstance(value, list):
+                                team_summary["positions"][key] = []
+                                for player in value[:3]:  # Top 3 players per position
+                                    if isinstance(player, dict):
+                                        team_summary["positions"][key].append(player.get("name", ""))
+                                    else:
+                                        team_summary["positions"][key].append(str(player))
+                        
+                        summarized["teams"].append(team_summary)
+                
+                return summarized
+                
+            elif isinstance(depth_data, dict):
+                print(f"DEBUG: Processing dict format with keys: {list(depth_data.keys())}")
+                summarized = {
+                    "teams_count": 0,
+                    "teams": []
+                }
+                
+                # Handle different dictionary structures
+                # Case 1: Teams as keys (e.g., {"DET": {...}, "GB": {...}})
+                if any(len(key) <= 3 and key.isupper() for key in depth_data.keys()):
+                    print("DEBUG: Case 1 - Team abbreviations as keys")
+                    for team_abbr, team_depth in depth_data.items():
+                        if "DET" in team_abbr.upper() or "DETROIT" in team_abbr.upper():
+                            print(f"DEBUG: Found Detroit Lions depth data under key '{team_abbr}': {team_depth}")
+                        
+                        if isinstance(team_depth, dict):
+                            team_summary = {
+                                "team": team_abbr,
+                                "positions": {}
+                            }
+                            
+                            for position, players in team_depth.items():
+                                if isinstance(players, list):
+                                    team_summary["positions"][position] = []
+                                    for player in players[:3]:  # Top 3 players
+                                        if isinstance(player, dict):
+                                            team_summary["positions"][position].append(player.get("name", ""))
+                                        else:
+                                            team_summary["positions"][position].append(str(player))
+                            
+                            summarized["teams"].append(team_summary)
+                            summarized["teams_count"] += 1
+                  # Case 2: Check for "teams" key
+                elif "teams" in depth_data:
+                    print("DEBUG: Case 2 - Teams under 'teams' key")
+                    return self._summarize_depth_charts(depth_data["teams"])
+                
+                # Case 2.5: Check for "charts" key (Fantasy Nerds API specific)
+                elif "charts" in depth_data:
+                    print("DEBUG: Case 2.5 - Charts under 'charts' key")
+                    return self._summarize_depth_charts(depth_data["charts"])
+                
+                # Case 3: Other structure - try to find team data
+                else:
+                    print("DEBUG: Case 3 - Other structure, searching for team data")
+                    for key, value in depth_data.items():
+                        if isinstance(value, (list, dict)) and key.lower() not in ["metadata", "status", "error"]:
+                            print(f"DEBUG: Found potential team data under key '{key}': {type(value)}")
+                            if isinstance(value, list) and len(value) > 0 and isinstance(value[0], dict):
+                                # Looks like a list of teams
+                                return self._summarize_depth_charts(value)
+                            elif isinstance(value, dict):
+                                # Might be a single team or nested structure
+                                team_summary = {
+                                    "team": key,
+                                    "positions": {}
+                                }
+                                
+                                for pos_key, pos_value in value.items():
+                                    if isinstance(pos_value, list):
+                                        team_summary["positions"][pos_key] = []
+                                        for player in pos_value[:3]:
+                                            if isinstance(player, dict):
+                                                team_summary["positions"][pos_key].append(player.get("name", ""))
+                                            else:
+                                                team_summary["positions"][pos_key].append(str(player))
+                                
+                                if team_summary["positions"]:  # Only add if we found positions
+                                    summarized["teams"].append(team_summary)
+                                    summarized["teams_count"] += 1
+                
+                return summarized
+                
+            else:
+                print(f"DEBUG: Unexpected data format: {type(depth_data)}")
+                return {"summary": "Depth chart data available but in unexpected format", "debug_type": str(type(depth_data))}
+                
+        except Exception as e:
+            print(f"Error summarizing depth chart data: {e}")
+            import traceback
+            traceback.print_exc()
+            return {"summary": "Depth chart data available but could not be summarized", "error": str(e)}
+
+    def _summarize_bye_weeks(self, bye_data: Union[List[Dict[str, Any]], Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Summarize bye weeks data
+        """
+        try:
+            if isinstance(bye_data, list):
+                summarized = {
+                    "bye_weeks": []
+                }
+                
+                for week_data in bye_data:
+                    if isinstance(week_data, dict):
+                        summarized["bye_weeks"].append({
+                            "week": week_data.get("week", ""),
+                            "teams": week_data.get("teams", [])
+                        })
+                
+                return summarized
+            elif isinstance(bye_data, dict):
+                if "weeks" in bye_data:
+                    return self._summarize_bye_weeks(bye_data["weeks"])
+                else:
+                    return {"summary": "Bye weeks data available", "data": bye_data}
+            else:
+                return {"summary": "Bye weeks data available but in unexpected format"}
+        except Exception as e:
+            print(f"Error summarizing bye weeks data: {e}")
+            return {"summary": "Bye weeks data available but could not be summarized", "error": str(e)}
+
+    def _summarize_add_drops(self, add_drops_data: Union[List[Dict[str, Any]], Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Summarize add/drops data
+        """
+        try:
+            if isinstance(add_drops_data, list):
+                summarized = {
+                    "total_transactions": len(add_drops_data),
+                    "top_adds": [],
+                    "top_drops": []
+                }
+                
+                # Separate adds and drops
+                for transaction in add_drops_data[:10]:  # Limit to 10
+                    if isinstance(transaction, dict):
+                        if transaction.get("type") == "add":
+                            summarized["top_adds"].append({
+                                "player": transaction.get("player", ""),
+                                "team": transaction.get("team", ""),
+                                "position": transaction.get("position", ""),
+                                "percentage": transaction.get("percentage", 0)
+                            })
+                        elif transaction.get("type") == "drop":
+                            summarized["top_drops"].append({
+                                "player": transaction.get("player", ""),
+                                "team": transaction.get("team", ""),
+                                "position": transaction.get("position", ""),
+                                "percentage": transaction.get("percentage", 0)
+                            })
+                
+                return summarized
+            else:
+                return {"summary": "Add/drops data available but in unexpected format"}
+        except Exception as e:
+            print(f"Error summarizing add/drops data: {e}")
+            return {"summary": "Add/drops data available but could not be summarized", "error": str(e)}
+
+    def _summarize_weather_data(self, weather_data: Union[List[Dict[str, Any]], Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Summarize weather forecast data
+        """
+        try:
+            if isinstance(weather_data, list):
+                summarized = {
+                    "games_count": len(weather_data),
+                    "forecasts": []
+                }
+                
+                for game in weather_data[:5]:  # Limit to 5 games
+                    if isinstance(game, dict):
+                        summarized["forecasts"].append({
+                            "game": f"{game.get('away_team', '')} @ {game.get('home_team', '')}",
+                            "temperature": game.get("temperature", ""),
+                            "conditions": game.get("conditions", ""),
+                            "wind": game.get("wind", ""),
+                            "precipitation": game.get("precipitation", "")
+                        })
+                
+                return summarized
+            else:
+                return {"summary": "Weather data available but in unexpected format"}
+        except Exception as e:
+            print(f"Error summarizing weather data: {e}")
+            return {"summary": "Weather data available but could not be summarized", "error": str(e)}
+
+    def _summarize_dfs_data(self, dfs_data: Union[List[Dict[str, Any]], Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Summarize DFS (Daily Fantasy Sports) data
+        """
+        try:
+            if isinstance(dfs_data, list):
+                summarized = {
+                    "players_count": len(dfs_data),
+                    "top_value_players": []
+                }
+                
+                # Sort by value and take top players
+                sorted_players = sorted(dfs_data, key=lambda x: x.get("value", 0), reverse=True)
+                
+                for player in sorted_players[:10]:  # Top 10 value players
+                    if isinstance(player, dict):
+                        summarized["top_value_players"].append({
+                            "player": player.get("name", ""),
+                            "team": player.get("team", ""),
+                            "position": player.get("position", ""),
+                            "salary": player.get("salary", 0),
+                            "projected_points": player.get("projected_points", 0),
+                            "value": player.get("value", 0)
+                        })
+                
+                return summarized
+            else:
+                return {"summary": "DFS data available but in unexpected format"}
+        except Exception as e:
+            print(f"Error summarizing DFS data: {e}")
+            return {"summary": "DFS data available but could not be summarized", "error": str(e)}
+
+    def _summarize_dfs_slates(self, slates_data: Union[List[Dict[str, Any]], Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Summarize DFS slates data
+        """
+        try:
+            if isinstance(slates_data, list):
+                summarized = {
+                    "slates_count": len(slates_data),
+                    "available_slates": []
+                }
+                
+                for slate in slates_data:
+                    if isinstance(slate, dict):
+                        summarized["available_slates"].append({
+                            "slate_id": slate.get("slate_id", ""),
+                            "name": slate.get("name", ""),
+                            "start_time": slate.get("start_time", ""),
+                            "games_count": len(slate.get("games", []))
+                        })
+                
+                return summarized
+            else:
+                return {"summary": "DFS slates data available but in unexpected format"}
+        except Exception as e:
+            print(f"Error summarizing DFS slates data: {e}")
+            return {"summary": "DFS slates data available but could not be summarized", "error": str(e)}
+
+    def _summarize_nfl_picks(self, picks_data: Union[List[Dict[str, Any]], Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Summarize NFL picks data
+        """
+        try:
+            if isinstance(picks_data, list):
+                summarized = {
+                    "games_count": len(picks_data),
+                    "picks": []
+                }
+                
+                for game in picks_data:
+                    if isinstance(game, dict):
+                        summarized["picks"].append({
+                            "game": f"{game.get('away_team', '')} @ {game.get('home_team', '')}",
+                            "spread": game.get("spread", ""),
+                            "over_under": game.get("over_under", ""),
+                            "expert_picks": game.get("expert_picks", [])[:3]  # Limit to 3 expert picks
+                        })
+                
+                return summarized
+            else:
+                return {"summary": "NFL picks data available but in unexpected format"}
+        except Exception as e:
+            print(f"Error summarizing NFL picks data: {e}")
+            return {"summary": "NFL picks data available but could not be summarized", "error": str(e)}
 
 llm_service = LLMService()
