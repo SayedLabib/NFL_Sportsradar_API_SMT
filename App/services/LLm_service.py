@@ -426,22 +426,28 @@ class LLMService:
         games_summary = []
         
         try:
-            # Take up to 5 games to avoid overloading context
-            for game in games_data[:5]:
+            # Take up to 10 games to show more complete schedule
+            for game in games_data[:10]:
+                # Handle both new and old data structures
+                home_team_info = game.get("home_team", "")
+                away_team_info = game.get("away_team", "")
+                
+                # If direct fields don't exist, try nested structure
+                if not home_team_info:
+                    home_team_info = game.get("home", {}).get("alias", "")
+                if not away_team_info:
+                    away_team_info = game.get("away", {}).get("alias", "")
+                
                 game_summary = {
-                    "id": game.get("id", ""),
-                    "status": game.get("status", ""),
-                    "scheduled": game.get("scheduled", ""),
-                    "home_team": {
-                        "name": game.get("home", {}).get("name", ""),
-                        "alias": game.get("home", {}).get("alias", ""),
-                        "points": game.get("home_points", None)
-                    },
-                    "away_team": {
-                        "name": game.get("away", {}).get("name", ""),
-                        "alias": game.get("away", {}).get("alias", ""),
-                        "points": game.get("away_points", None)
-                    }
+                    "gameId": game.get("gameId", game.get("id", "")),
+                    "week": game.get("week", ""),
+                    "game_date": game.get("game_date", game.get("scheduled", "")),
+                    "home_team": home_team_info,
+                    "away_team": away_team_info,
+                    "tv_station": game.get("tv_station", ""),
+                    "home_score": game.get("home_score", game.get("home_points", 0)),
+                    "away_score": game.get("away_score", game.get("away_points", 0)),
+                    "status": game.get("status", "Scheduled")
                 }
                 games_summary.append(game_summary)
             
@@ -521,17 +527,16 @@ class LLMService:
             for game in games:
                 if isinstance(game, dict):
                     game_summary = {
-                        "id": game.get("id", ""),
-                        "status": game.get("status", ""),
-                        "scheduled": game.get("scheduled", ""),
-                        "home_team": {
-                            "name": game.get("home", {}).get("name", ""),
-                            "alias": game.get("home", {}).get("alias", "")
-                        },
-                        "away_team": {
-                            "name": game.get("away", {}).get("name", ""),
-                            "alias": game.get("away", {}).get("alias", "")
-                        }
+                        "gameId": game.get("gameId", game.get("id", "")),
+                        "season": game.get("season", ""),
+                        "week": game.get("week", ""),
+                        "game_date": game.get("game_date", game.get("scheduled", "")),
+                        "home_team": game.get("home_team", game.get("home", {}).get("alias", "")),
+                        "away_team": game.get("away_team", game.get("away", {}).get("alias", "")),
+                        "home_score": game.get("home_score", game.get("home_points", None)),
+                        "away_score": game.get("away_score", game.get("away_points", None)),
+                        "tv_station": game.get("tv_station", ""),
+                        "winner": game.get("winner", None)
                     }
                     summarized["games"].append(game_summary)
             

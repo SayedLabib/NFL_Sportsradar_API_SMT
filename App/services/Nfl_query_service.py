@@ -343,14 +343,26 @@ class NFLQueryService:
             elif query_type == "matchups":
                 # Get schedule data
                 combined_data["schedule"] = await self.api_client.get_schedule()
-                
-                # If specific teams mentioned, filter or highlight their games
+                  # If specific teams mentioned, filter or highlight their games
                 if teams:
                     relevant_games = []
-                    for game in combined_data.get("schedule", {}).get("games", []):
-                        home_alias = game.get("home", {}).get("alias", "")
-                        away_alias = game.get("away", {}).get("alias", "")
-                        if home_alias in teams or away_alias in teams:
+                    # Handle both possible data structures
+                    schedule_games = combined_data.get("schedule", {}).get("schedule", [])
+                    if not schedule_games:
+                        schedule_games = combined_data.get("schedule", {}).get("games", [])
+                    
+                    for game in schedule_games:
+                        # Handle direct team fields (current API structure)
+                        home_team = game.get("home_team", "")
+                        away_team = game.get("away_team", "")
+                        
+                        # Handle nested structure (fallback)
+                        if not home_team:
+                            home_team = game.get("home", {}).get("alias", "")
+                        if not away_team:
+                            away_team = game.get("away", {}).get("alias", "")
+                            
+                        if home_team in teams or away_team in teams:
                             relevant_games.append(game)
                     combined_data["relevant_games"] = relevant_games
                 
@@ -384,19 +396,30 @@ class NFLQueryService:
                 combined_data["schedule"] = await self.api_client.get_schedule()
                 
                 # Get team context
-                combined_data["league"] = await self.api_client.get_teams()
-                
-                # If specific teams mentioned, filter their games
+                combined_data["league"] = await self.api_client.get_teams()                  # If specific teams mentioned, filter their games
                 if teams:
                     team_games = {}
                     for team_code in teams:
                         team_games[team_code] = []
                         
-                    for game in combined_data.get("schedule", {}).get("games", []):
-                        home_alias = game.get("home", {}).get("alias", "")
-                        away_alias = game.get("away", {}).get("alias", "")
+                    # Handle both possible data structures
+                    schedule_games = combined_data.get("schedule", {}).get("schedule", [])
+                    if not schedule_games:
+                        schedule_games = combined_data.get("schedule", {}).get("games", [])
+                    
+                    for game in schedule_games:
+                        # Handle direct team fields (current API structure)
+                        home_team = game.get("home_team", "")
+                        away_team = game.get("away_team", "")
+                        
+                        # Handle nested structure (fallback)
+                        if not home_team:
+                            home_team = game.get("home", {}).get("alias", "")
+                        if not away_team:
+                            away_team = game.get("away", {}).get("alias", "")
+                            
                         for team_code in teams:
-                            if home_alias == team_code or away_alias == team_code:
+                            if home_team == team_code or away_team == team_code:
                                 team_games[team_code].append(game)
                                 
                     combined_data["team_games"] = team_games
