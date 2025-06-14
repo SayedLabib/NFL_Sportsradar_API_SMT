@@ -201,15 +201,22 @@ class NFLQueryService:
                     "andrews": "Mark Andrews",
                     "kittle": "George Kittle",
                     "hockenson": "T.J. Hockenson",
-                    "goedert": "Dallas Goedert"
-                }
+                    "goedert": "Dallas Goedert"                }
                 
                 for last_name, full_name in last_names.items():
                     if last_name in query.lower():
                         params["player"] = full_name
                         break
-              # Classify query type
-        if any(term in query for term in ["ranking", "rank", "best", "top", "stats", "statistics", "projections"]):
+        
+        # Classify query type - check specific terms before general ones
+        
+        # Check for draft projections FIRST (before general "projections" check)
+        if any(term in query for term in ["draft projection", "draft projections", "draft_projection", "draft_projections"]):
+            return "draft_projections", params
+            
+        # Check for general rankings/projections (excluding draft projections already handled above)
+        if any(term in query for term in ["ranking", "rank", "best", "top", "stats", "statistics"]) or \
+           ("projections" in query and "draft" not in query):
             return "player_rankings", params
             
         if any(term in query for term in ["matchup", "vs", "versus", "against", "playing against", "face off", "game between"]):
@@ -238,7 +245,6 @@ class NFLQueryService:
         if any(term in query for term in ["adds", "drops", "pickups", "waiver", "transactions"]):
             return "adds_drops", params
             
-        # New Fantasy Nerds API specific query types
         if any(term in query for term in ["draft", "drafting", "draft pick", "adp", "average draft position"]):
             return "draft_rankings", params
             
@@ -437,8 +443,7 @@ class NFLQueryService:
             elif query_type == "standings":
                 # Get standings data
                 combined_data["standings"] = await self.api_client.get_standings()
-                
-                # Get team context
+                  # Get team context
                 combined_data["league"] = await self.api_client.get_teams()
                 
             elif query_type == "draft_rankings":
@@ -454,6 +459,12 @@ class NFLQueryService:
                     
                 combined_data["draft_rankings"] = await self.api_client.get_draft_rankings(format_type)
                 combined_data["adp"] = await self.api_client.get_adp(format=format_type)
+                
+            elif query_type == "draft_projections":
+                # Get draft projections
+                combined_data["draft_projections"] = await self.api_client.get_draft_projections()
+                # Also get league structure for team context
+                combined_data["league"] = await self.api_client.get_teams()
                 
             elif query_type == "auction_values":
                 # Get auction values
@@ -563,8 +574,8 @@ class NFLQueryService:
             "injuries": ["/nfl/injuries", "/nfl/teams", "/nfl/news"],
             "schedule": ["/nfl/schedule", "/nfl/teams"],
             "depth_chart": ["/nfl/depth", "/nfl/teams"],
-            "standings": ["/nfl/standings", "/nfl/teams"],
-            "draft_rankings": ["/nfl/draft-rankings", "/nfl/adp"],
+            "standings": ["/nfl/standings", "/nfl/teams"],            "draft_rankings": ["/nfl/draft-rankings", "/nfl/adp"],
+            "draft_projections": ["/nfl/draft-projections", "/nfl/teams"],
             "auction_values": ["/nfl/auction-values"],
             "player_tiers": ["/nfl/player-tiers"],
             "dynasty": ["/nfl/dynasty"],

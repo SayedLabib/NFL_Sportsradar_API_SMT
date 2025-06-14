@@ -250,7 +250,7 @@ class LLMService:
                 
             # Handle draft projections data
             if "draft_projections" in data:
-                summarized["draft_projections"] = self._summarize_fantasy_rankings(data["draft_projections"])
+                summarized["draft_projections"] = self._summarize_draft_projections(data["draft_projections"])
                 
             # Handle DFS data
             if "dfs" in data:
@@ -1236,5 +1236,75 @@ class LLMService:
         except Exception as e:
             print(f"Error summarizing NFL picks data: {e}")
             return {"summary": "NFL picks data available but could not be summarized", "error": str(e)}
+
+    def _summarize_draft_projections(self, projections_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Summarize draft projections data which has a specific structure with position-based arrays
+        """
+        try:
+            print(f"DEBUG: _summarize_draft_projections called with data type: {type(projections_data)}")
+            
+            if not projections_data:
+                return {"summary": "No draft projections data available"}
+            
+            # Handle the projections structure: {projections: {QB: [...], RB: [...], etc}, season: 2025}
+            if "projections" in projections_data:
+                projections = projections_data["projections"]
+                season = projections_data.get("season", "Unknown")
+                
+                summarized = {
+                    "season": season,
+                    "positions": {}
+                }
+                
+                # Process each position
+                for position, players in projections.items():
+                    if isinstance(players, list) and players:
+                        # Take top players from each position (limit to avoid context overflow)
+                        top_players = players[:15]  # Top 15 per position
+                        position_summary = []
+                        
+                        for rank, player in enumerate(top_players, 1):
+                            if isinstance(player, dict):
+                                player_summary = {
+                                    "rank": rank,
+                                    "name": player.get("name", ""),
+                                    "team": player.get("team", ""),
+                                    "position": player.get("position", position),
+                                    "player_id": player.get("playerId", "")
+                                }
+                                
+                                # Include key projection stats based on position
+                                if position == "QB":
+                                    player_summary["projections"] = {
+                                        "passing_yards": player.get("passing_yards", ""),
+                                        "passing_touchdowns": player.get("passing_touchdowns", ""),
+                                        "rushing_yards": player.get("rushing_yards", ""),
+                                        "rushing_touchdowns": player.get("rushing_touchdowns", "")
+                                    }
+                                elif position in ["RB", "WR", "TE"]:
+                                    player_summary["projections"] = {
+                                        "rushing_yards": player.get("rushing_yards", ""),
+                                        "rushing_touchdowns": player.get("rushing_touchdowns", ""),
+                                        "receiving_yards": player.get("receiving_yards", ""),
+                                        "receiving_touchdowns": player.get("receiving_touchdowns", ""),
+                                        "receptions": player.get("receptions", "")
+                                    }
+                                
+                                position_summary.append(player_summary)
+                        
+                        summarized["positions"][position] = {
+                            "count": len(players),
+                            "top_players": position_summary
+                        }
+                
+                return summarized
+            else:
+                # Fallback to regular rankings processing if structure is different
+                return self._summarize_fantasy_rankings(projections_data)
+                
+        except Exception as e:
+            print(f"Error summarizing draft projections: {e}")
+            return {"summary": "Draft projections data available but could not be summarized", "error": str(e)}
 
 llm_service = LLMService()
