@@ -41,6 +41,10 @@ class LLMService:
             "Content-Type": "application/json",
         }
         
+        # Extract mentioned player names from the query
+        mentioned_players = self._extract_player_names_from_query(query)
+        print(f"DEBUG: Extracted player names from query: {mentioned_players}")
+        
         # Extract information about which endpoints were used
         endpoints_used = []
         if context_data:
@@ -99,14 +103,68 @@ class LLMService:
             )
             
             messages.append({"role": "system", "content": data_instructions})
+              # Format and add the summarized context data
+            context_str = f"{json.dumps(summarized_data, indent=2)}"
+              # Handle large datasets with chunked context approach
+            max_context_size = 50000  # Increased significantly for comprehensive player coverage
             
-            # Format and add the summarized context data
-            context_str = f"{json.dumps(summarized_data, indent=2)}"            # Limit context string to avoid payload too large - increased for better VORP calculations
-            if len(context_str) > 25000:  # Increased size to allow more player data for VORP calculations
-                context_str = context_str[:25000] + "...[additional data truncated for size]"
+            if len(context_str) > max_context_size:
+                print(f"DEBUG: Large context detected ({len(context_str)} chars) - implementing smart truncation")
+                # Smart truncation - prioritize relevant data based on query type
+                context_obj = json.loads(context_str)
+                query_type = context_obj.get("query_type", "")
                 
+                # Prioritize data based on query type
+                essential_data = {
+                    "query_type": query_type,
+                    "metadata": {"note": "Comprehensive dataset - metadata truncated for space"}
+                }                # Keep the most relevant data based on query type
+                if query_type == "ros_projections" and "ros_projections" in context_obj:
+                    print("DEBUG: Prioritizing ROS projections data in truncation")
+                    
+                    # Smart player prioritization - ensure mentioned players are included
+                    if mentioned_players:
+                        print(f"DEBUG: Ensuring mentioned players are included: {mentioned_players}")
+                        essential_data["ros_projections"] = self._prioritize_mentioned_players_in_ros(
+                            context_obj["ros_projections"], mentioned_players
+                        )
+                    else:
+                        essential_data["ros_projections"] = context_obj["ros_projections"]
+                    
+                    # DEBUG: Check if mentioned players are in the truncated ROS data
+                    if mentioned_players and "RB" in essential_data["ros_projections"]:
+                        rb_players = essential_data["ros_projections"]["RB"]
+                        for mentioned_player in mentioned_players:
+                            player_found = False
+                            for player in rb_players[:20]:  # Check first 20 for debug
+                                if any(name.lower() in player.get("name", "").lower() for name in mentioned_player.split()):
+                                    print(f"DEBUG: {mentioned_player} found in truncated ROS RB data: {player.get('name', '')}")
+                                    player_found = True
+                                    break
+                            if not player_found:
+                                print(f"DEBUG: {mentioned_player} NOT found in first 20 ROS RB players in truncated data")
+                elif query_type == "draft_projections" and "draft_projections" in context_obj:
+                    print("DEBUG: Prioritizing draft projections data in truncation")
+                    essential_data["draft_projections"] = context_obj["draft_projections"]
+                elif "draft_rankings" in context_obj and "players_sample" in context_obj["draft_rankings"]:
+                    print("DEBUG: Prioritizing draft rankings data in truncation")
+                    essential_data["draft_rankings"] = context_obj["draft_rankings"]
+                else:
+                    # Keep first available dataset
+                    for key in ["ros_projections", "draft_projections", "draft_rankings", "weekly_rankings"]:
+                        if key in context_obj:
+                            print(f"DEBUG: Prioritizing {key} data in truncation as fallback")
+                            essential_data[key] = context_obj[key]
+                            break
+                
+                context_str = json.dumps(essential_data, indent=2)
+                    
+                # Final size check
+                if len(context_str) > max_context_size:
+                    context_str = context_str[:max_context_size] + "...[additional data available - query for specific players]"
+                    
             messages.append({"role": "system", "content": context_str})
-            print(f"Context data size after summary: {len(context_str)} characters")
+            print(f"Context data size after processing: {len(context_str)} characters")
 
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
@@ -692,11 +750,22 @@ class LLMService:
         if not rankings_data:
             return {"summary": "No rankings data available"}
             
-        try:
-            # Handle if the response is a list of players
+        try:            # Handle if the response is a list of players
             if isinstance(rankings_data, list):
-                print(f"DEBUG: Handling list format with {len(rankings_data)} items")                # Take more players to enable VORP calculations (need ~25 for QB position analysis)
-                top_players = rankings_data[:25]
+                print(f"DEBUG: Handling list format with {len(rankings_data)} items")
+                
+                # COMPREHENSIVE PROCESSING: Handle all players using chunked approach for large datasets
+                total_players = len(rankings_data)
+                
+                if total_players > 200:
+                    # Large dataset - use chunked processing for reliability
+                    print(f"DEBUG: Large dataset detected ({total_players} players) - using chunked processing")
+                    return self._process_large_player_list_chunked(rankings_data)
+                else:
+                    # Small to medium dataset - process all directly
+                    print(f"DEBUG: Processing all {total_players} players directly")
+                    top_players = rankings_data
+                
                 summarized = []
                 
                 for player in top_players:
@@ -779,18 +848,37 @@ class LLMService:
                     summarized = {
                         "metadata": {k: v for k, v in rankings_data.items() if k not in ["players", "data"] and not isinstance(v, (list, dict))},
                         "players_sample": []
-                    }
-                      # First check for "players" key specifically (common in Fantasy Nerds API)
+                    }                    # First check for "players" key specifically (common in Fantasy Nerds API)
                     if "players" in rankings_data and isinstance(rankings_data["players"], list):
                         print(f"DEBUG: Found 'players' key with {len(rankings_data['players'])} players")
-                        # Take more players for better VORP analysis
-                        summarized["players_sample"] = self._summarize_fantasy_rankings(rankings_data["players"][:30])
+                        
+                        # COMPREHENSIVE COVERAGE: Process all players using chunked approach for production safety
+                        all_players = rankings_data["players"]
+                        total_players = len(all_players)
+                        
+                        print(f"DEBUG: Processing ALL {total_players} players using chunked approach")
+                        
+                        # Use all players - no sampling, comprehensive coverage
+                        summarized["players_sample"] = self._summarize_fantasy_rankings(all_players)
+                        return summarized
                     else:
-                        # Try to find player data in any list field
+                        # Try to find player data in any list field and apply tiered sampling
                         for key, value in rankings_data.items():
                             if isinstance(value, list) and value and isinstance(value[0], dict):
-                                print(f"DEBUG: Found player data in '{key}' field with {len(value)} items")                                # Take more data for better analysis
-                                summarized["players_sample"] = self._summarize_fantasy_rankings(value[:30])
+                                print(f"DEBUG: Found player data in '{key}' field with {len(value)} items")
+                                
+                                # Apply same tiered sampling logic
+                                total_items = len(value)
+                                if total_items > 30:
+                                    # Use tiered approach for large datasets
+                                    tier1 = value[:15]  # Top tier
+                                    tier2 = value[50:60] if total_items > 60 else []  # Mid tier
+                                    tier3 = value[150:155] if total_items > 155 else []  # Lower tier
+                                    tiered_sample = tier1 + tier2 + tier3
+                                    summarized["players_sample"] = self._summarize_fantasy_rankings(tiered_sample)
+                                else:
+                                    # Small dataset, take all
+                                    summarized["players_sample"] = self._summarize_fantasy_rankings(value[:30])
                                 break
                         return summarized
             else:
@@ -840,6 +928,12 @@ class LLMService:
         Summarize ROS (Rest of Season) projections data specifically
         ROS data typically has structure: {"season": 2025, "projections": {"QB": [...], "RB": [...], ...}}
         """
+        print(f"DEBUG: _summarize_ros_projections called with data type: {type(ros_data)}")
+        if isinstance(ros_data, dict):
+            print(f"DEBUG: ROS dict keys: {list(ros_data.keys())}")
+        elif isinstance(ros_data, list):
+            print(f"DEBUG: ROS list length: {len(ros_data)}")
+            
         if not ros_data:
             return {"summary": "No ROS projections data available"}
             
@@ -853,39 +947,44 @@ class LLMService:
                 summarized = {
                     "season": ros_data.get("season", ""),
                     "metadata": {k: v for k, v in ros_data.items() if k not in ["projections", "season"] and not isinstance(v, dict)}
-                }
-                  # Handle the main projections data
+                }                  # Handle the main projections data
                 if "projections" in ros_data and isinstance(ros_data["projections"], dict):
                     projections = ros_data["projections"]
                     
-                    # Summarize each position's projections
+                    # COMPREHENSIVE PROCESSING: Use chunked approach for all position projections
                     for position, players in projections.items():
                         if isinstance(players, list) and players:
-                            # For VORP calculations, we need more QBs to see replacement level (typically QB20-24)
-                            # For other positions, still take more for better analysis
-                            max_players = 30 if position == "QB" else 20
+                            total_players = len(players)
+                            print(f"DEBUG: ROS {position} - Processing ALL {total_players} players using comprehensive approach")
                             
-                            position_summary = []
-                            for player in players[:max_players]:
-                                if isinstance(player, dict):
-                                    player_summary = {
-                                        "name": player.get("name", ""),
-                                        "team": player.get("team", ""),
-                                        "position": player.get("position", position)
-                                    }
-                                    
-                                    # Include projected points (critical for VORP calculations)
-                                    if "proj_pts" in player:
-                                        player_summary["projected_points"] = player.get("proj_pts", 0)
-                                    
-                                    # Include other key stats that might be useful
-                                    for stat in ["passing_yards", "passing_touchdowns", "rushing_yards", "rushing_touchdowns", "receiving_yards", "receiving_touchdowns"]:
-                                        if stat in player:
-                                            player_summary[stat] = player.get(stat, 0)
-                                            
-                                    position_summary.append(player_summary)
-                            
-                            summarized[position] = position_summary
+                            if total_players > 50:
+                                # Large dataset - use chunked processing
+                                print(f"DEBUG: ROS {position} - Large dataset detected, using chunked processing")
+                                summarized[position] = self._process_large_player_list_chunked_ros(players, position)
+                            else:
+                                # Small dataset - process all directly
+                                print(f"DEBUG: ROS {position} - Processing all {total_players} players directly")
+                                position_summary = []
+                                for player in players:
+                                    if isinstance(player, dict):
+                                        player_summary = {
+                                            "name": player.get("name", ""),
+                                            "team": player.get("team", ""),
+                                            "position": player.get("position", position)
+                                        }
+                                        
+                                        # Include projected points (critical for VORP calculations)
+                                        if "proj_pts" in player:
+                                            player_summary["projected_points"] = player.get("proj_pts", 0)
+                                        
+                                        # Include other key stats
+                                        for stat in ["passing_yards", "passing_touchdowns", "rushing_yards", "rushing_touchdowns", "receiving_yards", "receiving_touchdowns"]:
+                                            if stat in player:
+                                                player_summary[stat] = player.get(stat, 0)
+                                                
+                                        position_summary.append(player_summary)
+                                
+                                summarized[position] = position_summary
                             
                 else:
                     # Fallback: treat the entire ROS data as fantasy rankings
@@ -1256,46 +1355,53 @@ class LLMService:
                     "season": season,
                     "positions": {}
                 }
-                
-                # Process each position
+                  # Process each position
                 for position, players in projections.items():
                     if isinstance(players, list) and players:
-                        # Take top players from each position (limit to avoid context overflow)
-                        top_players = players[:15]  # Top 15 per position
-                        position_summary = []
+                        total_players = len(players)
+                        print(f"DEBUG: Draft Projections {position} - Processing ALL {total_players} players using comprehensive approach")
                         
-                        for rank, player in enumerate(top_players, 1):
-                            if isinstance(player, dict):
-                                player_summary = {
-                                    "rank": rank,
-                                    "name": player.get("name", ""),
-                                    "team": player.get("team", ""),
-                                    "position": player.get("position", position),
-                                    "player_id": player.get("playerId", "")
-                                }
-                                
-                                # Include key projection stats based on position
-                                if position == "QB":
-                                    player_summary["projections"] = {
-                                        "passing_yards": player.get("passing_yards", ""),
-                                        "passing_touchdowns": player.get("passing_touchdowns", ""),
-                                        "rushing_yards": player.get("rushing_yards", ""),
-                                        "rushing_touchdowns": player.get("rushing_touchdowns", "")
+                        if total_players > 30:
+                            # Large dataset - use chunked processing
+                            print(f"DEBUG: Draft Projections {position} - Large dataset detected, using chunked processing")
+                            position_data = self._process_large_player_list_chunked_draft_projections(players, position)
+                        else:
+                            # Small dataset - process all directly
+                            print(f"DEBUG: Draft Projections {position} - Processing all {total_players} players directly")
+                            position_data = []
+                            
+                            for rank, player in enumerate(players, 1):
+                                if isinstance(player, dict):
+                                    player_summary = {
+                                        "rank": rank,
+                                        "name": player.get("name", ""),
+                                        "team": player.get("team", ""),
+                                        "position": player.get("position", position),
+                                        "player_id": player.get("playerId", "")
                                     }
-                                elif position in ["RB", "WR", "TE"]:
-                                    player_summary["projections"] = {
-                                        "rushing_yards": player.get("rushing_yards", ""),
-                                        "rushing_touchdowns": player.get("rushing_touchdowns", ""),
-                                        "receiving_yards": player.get("receiving_yards", ""),
-                                        "receiving_touchdowns": player.get("receiving_touchdowns", ""),
-                                        "receptions": player.get("receptions", "")
-                                    }
-                                
-                                position_summary.append(player_summary)
+                                    
+                                    # Include comprehensive projection stats
+                                    if position == "QB":
+                                        player_summary["projections"] = {
+                                            "passing_yards": player.get("passing_yards", ""),
+                                            "passing_touchdowns": player.get("passing_touchdowns", ""),
+                                            "rushing_yards": player.get("rushing_yards", ""),
+                                            "rushing_touchdowns": player.get("rushing_touchdowns", "")
+                                        }
+                                    elif position in ["RB", "WR", "TE"]:
+                                        player_summary["projections"] = {
+                                            "rushing_yards": player.get("rushing_yards", ""),
+                                            "rushing_touchdowns": player.get("rushing_touchdowns", ""),
+                                            "receiving_yards": player.get("receiving_yards", ""),
+                                            "receiving_touchdowns": player.get("receiving_touchdowns", ""),
+                                            "receptions": player.get("receptions", "")
+                                        }
+                                    
+                                    position_data.append(player_summary)
                         
                         summarized["positions"][position] = {
-                            "count": len(players),
-                            "top_players": position_summary
+                            "count": total_players,
+                            "all_players": position_data
                         }
                 
                 return summarized
@@ -1306,5 +1412,352 @@ class LLMService:
         except Exception as e:
             print(f"Error summarizing draft projections: {e}")
             return {"summary": "Draft projections data available but could not be summarized", "error": str(e)}
+
+    def _process_large_player_list_chunked(self, players_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Process large player lists using chunked approach for production safety.
+        Splits large datasets into manageable chunks to avoid memory/timeout issues.
+        
+        Args:
+            players_list: List of player dictionaries to process
+            
+        Returns:
+            List of summarized player data covering all players
+        """
+        try:
+            total_players = len(players_list)
+            chunk_size = 150  # Optimal chunk size for LLM processing
+            all_summarized = []
+            
+            print(f"DEBUG: Chunked processing - {total_players} players in chunks of {chunk_size}")
+            
+            # Process players in chunks
+            for i in range(0, total_players, chunk_size):
+                chunk_end = min(i + chunk_size, total_players)
+                chunk = players_list[i:chunk_end]
+                chunk_num = (i // chunk_size) + 1
+                total_chunks = (total_players + chunk_size - 1) // chunk_size
+                
+                print(f"DEBUG: Processing chunk {chunk_num}/{total_chunks} - players {i+1} to {chunk_end}")
+                
+                # Process each chunk
+                for player in chunk:
+                    if not isinstance(player, dict):
+                        continue
+                        
+                    player_summary = {
+                        "id": player.get("player_id", ""),
+                        "name": player.get("display_name", player.get("name", "")),
+                        "team": player.get("team", ""),
+                        "position": player.get("position", ""),
+                        "rank": player.get("rank", player.get("position_rank", 0)),
+                        "bye_week": player.get("bye_week", "")
+                    }
+                    
+                    # Include projected points if available (common in weekly rankings)
+                    if "standard_points" in player:
+                        player_summary["projected_points"] = {
+                            "standard": player.get("standard_points", 0),
+                            "ppr": player.get("ppr_points", 0),
+                            "half_ppr": player.get("half_ppr_points", 0)
+                        }
+                    
+                    # Include projected points if available (critical for VORP calculations)
+                    if "proj_pts" in player:
+                        player_summary["projected_points"] = player.get("proj_pts", 0)
+                    
+                    # Include ADP data if available (common in draft rankings)
+                    if "adp" in player:
+                        player_summary["adp"] = player.get("adp", 0)
+                    
+                    # Include injury risk if available
+                    if "injury_risk" in player:
+                        player_summary["injury_risk"] = player.get("injury_risk", "")
+                        
+                    all_summarized.append(player_summary)
+            
+            print(f"DEBUG: Chunked processing complete - {len(all_summarized)} players processed from {total_players} total")
+            return all_summarized
+            
+        except Exception as e:
+            print(f"ERROR: Chunked processing failed: {e}")
+            # Fallback to processing first 200 players if chunked processing fails
+            return self._summarize_fantasy_rankings(players_list[:200])
+
+    def _process_large_player_list_chunked_ros(self, players_list: List[Dict[str, Any]], position: str) -> List[Dict[str, Any]]:
+        """
+        Process large ROS projection player lists using chunked approach for production safety.
+        Specialized for ROS projections with position-specific data.
+        
+        Args:
+            players_list: List of player dictionaries to process
+            position: Position (QB, RB, WR, etc.)
+            
+        Returns:
+            List of summarized player data covering all players for the position
+        """
+        try:
+            total_players = len(players_list)
+            chunk_size = 100  # Smaller chunks for ROS data due to more detailed stats
+            all_summarized = []
+            
+            print(f"DEBUG: ROS {position} chunked processing - {total_players} players in chunks of {chunk_size}")
+            
+            # Process players in chunks
+            for i in range(0, total_players, chunk_size):
+                chunk_end = min(i + chunk_size, total_players)
+                chunk = players_list[i:chunk_end]
+                chunk_num = (i // chunk_size) + 1
+                total_chunks = (total_players + chunk_size - 1) // chunk_size
+                
+                print(f"DEBUG: ROS {position} processing chunk {chunk_num}/{total_chunks} - players {i+1} to {chunk_end}")
+                  # Process each chunk
+                for player in chunk:
+                    if not isinstance(player, dict):
+                        continue
+                        
+                    player_summary = {
+                        "name": player.get("name", ""),
+                        "team": player.get("team", ""),
+                        "position": player.get("position", position)
+                    }
+                    
+                    # DEBUG: Check for Ollie Gordon specifically
+                    if "gordon" in player.get("name", "").lower():
+                        print(f"DEBUG: Found Gordon player in ROS {position}: {player.get('name', '')} - {player.get('team', '')}")
+                    
+                    # Include projected points (critical for VORP calculations)
+                    if "proj_pts" in player:
+                        player_summary["projected_points"] = player.get("proj_pts", 0)
+                    
+                    # Include comprehensive stats for ROS analysis
+                    ros_stats = ["passing_yards", "passing_touchdowns", "rushing_yards", "rushing_touchdowns", 
+                               "receiving_yards", "receiving_touchdowns", "receptions", "fumbles", "interceptions"]
+                    
+                    for stat in ros_stats:
+                        if stat in player:
+                            player_summary[stat] = player.get(stat, 0)
+                            
+                    all_summarized.append(player_summary)
+            
+            print(f"DEBUG: ROS {position} chunked processing complete - {len(all_summarized)} players processed from {total_players} total")
+            return all_summarized
+            
+        except Exception as e:
+            print(f"ERROR: ROS {position} chunked processing failed: {e}")
+            # Fallback to processing first 50 players if chunked processing fails
+            return self._process_ros_fallback(players_list[:50], position)
+    
+    def _process_ros_fallback(self, players_list: List[Dict[str, Any]], position: str) -> List[Dict[str, Any]]:
+        """Fallback processing for ROS data"""
+        fallback_summary = []
+        for player in players_list:
+            if isinstance(player, dict):
+                player_summary = {
+                    "name": player.get("name", ""),
+                    "team": player.get("team", ""),
+                    "position": player.get("position", position),
+                    "projected_points": player.get("proj_pts", 0)
+                }
+                fallback_summary.append(player_summary)
+        return fallback_summary
+
+    def _process_large_player_list_chunked_draft_projections(self, players_list: List[Dict[str, Any]], position: str) -> List[Dict[str, Any]]:
+        """
+        Process large draft projection player lists using chunked approach for production safety.
+        Specialized for draft projections with comprehensive statistical data.
+        
+        Args:
+            players_list: List of player dictionaries to process
+            position: Position (QB, RB, WR, etc.)
+            
+        Returns:
+            List of summarized player data covering all players for the position
+        """
+        try:
+            total_players = len(players_list)
+            chunk_size = 75  # Smaller chunks for draft projections due to detailed stats
+            all_summarized = []
+            
+            print(f"DEBUG: Draft Projections {position} chunked processing - {total_players} players in chunks of {chunk_size}")
+            
+            # Process players in chunks
+            for i in range(0, total_players, chunk_size):
+                chunk_end = min(i + chunk_size, total_players)
+                chunk = players_list[i:chunk_end]
+                chunk_num = (i // chunk_size) + 1
+                total_chunks = (total_players + chunk_size - 1) // chunk_size
+                
+                print(f"DEBUG: Draft Projections {position} processing chunk {chunk_num}/{total_chunks} - players {i+1} to {chunk_end}")
+                
+                # Process each chunk
+                for rank, player in enumerate(chunk, start=i+1):
+                    if not isinstance(player, dict):
+                        continue
+                        
+                    player_summary = {
+                        "rank": rank,
+                        "name": player.get("name", ""),
+                        "team": player.get("team", ""),
+                        "position": player.get("position", position),
+                        "player_id": player.get("playerId", "")
+                    }
+                    
+                    # Include comprehensive projection stats based on position
+                    if position == "QB":
+                        player_summary["projections"] = {
+                            "passing_yards": player.get("passing_yards", ""),
+                            "passing_touchdowns": player.get("passing_touchdowns", ""),
+                            "rushing_yards": player.get("rushing_yards", ""),
+                            "rushing_touchdowns": player.get("rushing_touchdowns", ""),
+                            "interceptions": player.get("interceptions", ""),
+                            "fumbles": player.get("fumbles", "")
+                        }
+                    elif position in ["RB", "WR", "TE"]:
+                        player_summary["projections"] = {
+                            "rushing_yards": player.get("rushing_yards", ""),
+                            "rushing_touchdowns": player.get("rushing_touchdowns", ""),
+                            "receiving_yards": player.get("receiving_yards", ""),
+                            "receiving_touchdowns": player.get("receiving_touchdowns", ""),
+                            "receptions": player.get("receptions", ""),
+                            "fumbles": player.get("fumbles", "")
+                        }
+                    elif position == "K":
+                        player_summary["projections"] = {
+                            "field_goals": player.get("field_goals", ""),
+                            "extra_points": player.get("extra_points", ""),
+                            "field_goal_attempts": player.get("field_goal_attempts", "")
+                        }
+                    elif position == "DEF":
+                        player_summary["projections"] = {
+                            "sacks": player.get("sacks", ""),
+                            "interceptions": player.get("interceptions", ""),
+                            "fumble_recoveries": player.get("fumble_recoveries", ""),
+                            "defensive_touchdowns": player.get("defensive_touchdowns", "")
+                        }
+                            
+                    all_summarized.append(player_summary)
+            
+            print(f"DEBUG: Draft Projections {position} chunked processing complete - {len(all_summarized)} players processed from {total_players} total")
+            return all_summarized
+            
+        except Exception as e:
+            print(f"ERROR: Draft Projections {position} chunked processing failed: {e}")
+            # Fallback to processing first 30 players if chunked processing fails
+            return self._process_draft_projections_fallback(players_list[:30], position)
+    
+    def _process_draft_projections_fallback(self, players_list: List[Dict[str, Any]], position: str) -> List[Dict[str, Any]]:
+        """Fallback processing for draft projections data"""
+        fallback_summary = []
+        for rank, player in enumerate(players_list, 1):
+            if isinstance(player, dict):
+                player_summary = {
+                    "rank": rank,
+                    "name": player.get("name", ""),
+                    "team": player.get("team", ""),
+                    "position": player.get("position", position),
+                    "player_id": player.get("playerId", "")
+                }
+                fallback_summary.append(player_summary)
+        return fallback_summary
+
+    def _extract_player_names_from_query(self, query: str) -> List[str]:
+        """
+        Extract potential player names from the query text.
+        This looks for capitalized words that could be player names.
+        """
+        import re
+        
+        # Convert query to lowercase for processing
+        query_lower = query.lower()
+        
+        # Look for common name patterns
+        # This is a simple implementation - could be enhanced with a player database
+        potential_names = []
+        
+        # Look for specific patterns like "firstname lastname" 
+        # Split by common separators and look for capitalized words
+        words = re.findall(r'\b[A-Z][a-z]+\b', query)
+        
+        # Group consecutive capitalized words as potential names
+        i = 0
+        while i < len(words):
+            if i + 1 < len(words):
+                # Check if two consecutive words could be a name
+                potential_name = f"{words[i]} {words[i+1]}"
+                potential_names.append(potential_name)
+                i += 2
+            else:
+                i += 1
+        
+        # Also check for single names like "Gordon", "Mahomes" etc.
+        single_names = re.findall(r'\b[A-Z][a-z]{3,}\b', query)
+        potential_names.extend(single_names)
+        
+        # Remove duplicates and common words
+        common_words = {'NFL', 'ROS', 'VORP', 'Fantasy', 'Football', 'Player', 'Team', 'Season', 'Week', 'Analysis', 'Projections'}
+        filtered_names = []
+        for name in potential_names:
+            if name not in common_words and len(name) > 2:
+                filtered_names.append(name)
+        
+        return list(set(filtered_names))  # Remove duplicates
+
+    def _prioritize_mentioned_players_in_ros(self, ros_data: Dict[str, Any], mentioned_players: List[str]) -> Dict[str, Any]:
+        """
+        Prioritize mentioned players in ROS data to ensure they appear in truncated context.
+        
+        Args:
+            ros_data: The ROS projections data
+            mentioned_players: List of player names mentioned in the query
+            
+        Returns:
+            Modified ROS data with mentioned players prioritized
+        """
+        if not mentioned_players or not isinstance(ros_data, dict):
+            return ros_data
+        
+        print(f"DEBUG: Prioritizing players {mentioned_players} in ROS data")
+        
+        modified_ros = ros_data.copy()
+        
+        # For each position, prioritize mentioned players
+        for position, players in ros_data.items():
+            if not isinstance(players, list) or position in ["season", "metadata"]:
+                continue
+                
+            prioritized_players = []
+            remaining_players = []
+            
+            # First pass: find mentioned players
+            for player in players:
+                if not isinstance(player, dict):
+                    continue
+                    
+                player_name = player.get("name", "").lower()
+                is_mentioned = False
+                
+                for mentioned_player in mentioned_players:
+                    # Check if any part of the mentioned name matches the player name
+                    mentioned_parts = mentioned_player.lower().split()
+                    if any(part in player_name for part in mentioned_parts if len(part) > 2):
+                        print(f"DEBUG: Found mentioned player {mentioned_player} -> {player.get('name', '')} in {position}")
+                        prioritized_players.append(player)
+                        is_mentioned = True
+                        break
+                        
+                if not is_mentioned:
+                    remaining_players.append(player)
+            
+            # Combine: mentioned players first, then top performers
+            max_players_per_position = 15  # Limit to control context size
+            combined_players = prioritized_players + remaining_players[:max_players_per_position - len(prioritized_players)]
+            
+            if len(combined_players) != len(players):
+                print(f"DEBUG: {position} players reduced from {len(players)} to {len(combined_players)} (prioritized: {len(prioritized_players)})")
+            
+            modified_ros[position] = combined_players
+        
+        return modified_ros
 
 llm_service = LLMService()
