@@ -4,6 +4,7 @@ import json
 import httpx
 import hashlib
 import time
+import traceback
 from typing import Dict, List, Any, Union
 from App.core.config import settings
 
@@ -41,9 +42,21 @@ class LLMService:
             "Content-Type": "application/json",
         }
         
-        # Extract mentioned player names from the query
-        mentioned_players = self._extract_player_names_from_query(query)
-        print(f"DEBUG: Extracted player names from query: {mentioned_players}")
+        # Extract mentioned player names - prioritize detected players from context_data if available
+        mentioned_players = []
+        if context_data and "metadata" in context_data and "target_player" in context_data["metadata"]:
+            # Use the properly detected player from the query service
+            target_player = context_data["metadata"]["target_player"]
+            mentioned_players = [target_player]
+            print(f"DEBUG: Using detected player from context: {mentioned_players}")
+        else:
+            # Fallback to extracting from query text
+            mentioned_players = self._extract_player_names_from_query(query)
+            print(f"DEBUG: Extracted player names from query: {mentioned_players}")
+        
+        # Extract mentioned team names from the query
+        mentioned_teams = self._extract_team_names_from_query(query)
+        print(f"DEBUG: Extracted team names from query: {mentioned_teams}")
         
         # Extract information about which endpoints were used
         endpoints_used = []
@@ -85,7 +98,7 @@ class LLMService:
         # Process context data if available - with size limitation
         if context_data:
             # Summarize the data to avoid 413 errors
-            summarized_data = self._summarize_context_data(context_data)
+            summarized_data = self._summarize_context_data(context_data, mentioned_players, mentioned_teams)
               # Add instructions on how to use the data
             data_instructions = (
                 "The following NFL data from Fantasy Nerds API should be your PRIMARY source for answering the user's query. "
@@ -145,16 +158,49 @@ class LLMService:
                                 print(f"DEBUG: {mentioned_player} NOT found in first 20 ROS RB players in truncated data")
                 elif query_type == "draft_projections" and "draft_projections" in context_obj:
                     print("DEBUG: Prioritizing draft projections data in truncation")
-                    essential_data["draft_projections"] = context_obj["draft_projections"]
+                    
+                    # Smart player prioritization - ensure mentioned players are included
+                    if mentioned_players:
+                        print(f"DEBUG: Ensuring mentioned players are included: {mentioned_players}")
+                        essential_data["draft_projections"] = self._prioritize_mentioned_players_in_draft_projections(
+                            context_obj["draft_projections"], mentioned_players
+                        )
+                    else:
+                        essential_data["draft_projections"] = context_obj["draft_projections"]
                 elif "draft_rankings" in context_obj and "players_sample" in context_obj["draft_rankings"]:
                     print("DEBUG: Prioritizing draft rankings data in truncation")
-                    essential_data["draft_rankings"] = context_obj["draft_rankings"]
+                    
+                    # Smart player prioritization - ensure mentioned players are included
+                    if mentioned_players:
+                        print(f"DEBUG: Ensuring mentioned players are included: {mentioned_players}")
+                        essential_data["draft_rankings"] = self._prioritize_mentioned_players_in_fantasy_rankings(
+                            context_obj["draft_rankings"], mentioned_players, "draft_rankings"
+                        )
+                    else:
+                        essential_data["draft_rankings"] = context_obj["draft_rankings"]
                 else:
                     # Keep first available dataset
-                    for key in ["ros_projections", "draft_projections", "draft_rankings", "weekly_rankings"]:
+                    for key in ["ros_projections", "draft_projections", "draft_rankings", "weekly_rankings", "dynasty", "best_ball", "adp", "player_tiers", "auction_values"]:
                         if key in context_obj:
                             print(f"DEBUG: Prioritizing {key} data in truncation as fallback")
-                            essential_data[key] = context_obj[key]
+                            
+                            # Apply player prioritization to all fantasy endpoints
+                            if mentioned_players and key in ["weekly_rankings", "dynasty", "best_ball", "adp", "player_tiers", "auction_values"]:
+                                print(f"DEBUG: Applying player prioritization to {key}")
+                                essential_data[key] = self._prioritize_mentioned_players_in_fantasy_rankings(
+                                    context_obj[key], mentioned_players, key
+                                )
+                            # Apply team prioritization to team-related endpoints
+                            elif mentioned_teams and key in ["standings", "league", "teams"]:
+                                print(f"DEBUG: Applying team prioritization to {key}")
+                                if key == "standings":
+                                    essential_data[key] = self._prioritize_mentioned_teams_in_standings(
+                                        context_obj[key], mentioned_teams
+                                    )
+                                else:
+                                    essential_data[key] = context_obj[key]  # For league/teams, just pass through for now
+                            else:
+                                essential_data[key] = context_obj[key]
                             break
                 
                 context_str = json.dumps(essential_data, indent=2)
@@ -194,10 +240,11 @@ class LLMService:
             print(f"Error generating response: {e}")
             return f"Sorry, I couldn't generate a response: {str(e)}"
 
-    def _summarize_context_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
+    def _summarize_context_data(self, data: Dict[str, Any], mentioned_players: List[str] = None, mentioned_teams: List[str] = None) -> Dict[str, Any]:
         """
         Summarize the context data to a reasonable size for the LLM API, 
-        handling combined data from multiple endpoints        """
+        handling combined data from multiple endpoints with player/team prioritization
+        """
         # Create a container for the summarized data
         summarized = {
             "query_type": data.get("query_type", "unknown"),
@@ -238,17 +285,29 @@ class LLMService:
                     
             if "boxscore" in data:
                 summarized["boxscore"] = self._summarize_boxscore(data["boxscore"])
-                  # Handle draft rankings data
+                  # Handle draft rankings data with player prioritization
             if "draft_rankings" in data:
-                summarized["draft_rankings"] = self._summarize_fantasy_rankings(data["draft_rankings"])
+                if mentioned_players:
+                    prioritized_data = self._prioritize_mentioned_players_in_fantasy_rankings(data["draft_rankings"], mentioned_players, "draft_rankings")
+                    summarized["draft_rankings"] = self._summarize_fantasy_rankings(prioritized_data)
+                else:
+                    summarized["draft_rankings"] = self._summarize_fantasy_rankings(data["draft_rankings"])
                   
-            # Handle weekly rankings data  
+            # Handle weekly rankings data with player prioritization
             if "weekly_rankings" in data:
-                summarized["weekly_rankings"] = self._summarize_fantasy_rankings(data["weekly_rankings"])
+                if mentioned_players:
+                    prioritized_data = self._prioritize_mentioned_players_in_fantasy_rankings(data["weekly_rankings"], mentioned_players, "weekly_rankings")
+                    summarized["weekly_rankings"] = self._summarize_fantasy_rankings(prioritized_data)
+                else:
+                    summarized["weekly_rankings"] = self._summarize_fantasy_rankings(data["weekly_rankings"])
                 
-            # Handle ROS projections data (position-keyed structure)
+            # Handle ROS projections data with player prioritization
             if "ros_projections" in data:
-                summarized["ros_projections"] = self._summarize_ros_projections(data["ros_projections"])
+                if mentioned_players:
+                    prioritized_data = self._prioritize_mentioned_players_in_ros(data["ros_projections"], mentioned_players)
+                    summarized["ros_projections"] = self._summarize_ros_projections(prioritized_data)
+                else:
+                    summarized["ros_projections"] = self._summarize_ros_projections(data["ros_projections"])
                   # Handle news data
             if "news" in data:
                 summarized["news"] = self._summarize_news_data(data["news"])
@@ -306,9 +365,14 @@ class LLMService:
             if "weather" in data:
                 summarized["weather"] = self._summarize_weather_data(data["weather"])
                 
-            # Handle draft projections data
+            # Handle draft projections data with player prioritization
             if "draft_projections" in data:
-                summarized["draft_projections"] = self._summarize_draft_projections(data["draft_projections"])
+                # Prioritize mentioned players before summarizing
+                if mentioned_players:
+                    prioritized_data = self._prioritize_mentioned_players_in_draft_projections(data["draft_projections"], mentioned_players)
+                    summarized["draft_projections"] = self._summarize_draft_projections(prioritized_data)
+                else:
+                    summarized["draft_projections"] = self._summarize_draft_projections(data["draft_projections"])
                 
             # Handle DFS data
             if "dfs" in data:
@@ -842,7 +906,8 @@ class LLMService:
                 elif "data" in rankings_data and isinstance(rankings_data["data"], (list, dict)):
                     print(f"DEBUG: Case 2 - Data key detected")
                     return self._summarize_fantasy_rankings(rankings_data["data"])
-                      # Case 3: Other dictionary structure - extract key metadata
+                
+                # Case 3: Other dictionary structure - extract key metadata
                 else:
                     print(f"DEBUG: Case 3 - Other dictionary structure")
                     summarized = {
@@ -914,7 +979,8 @@ class LLMService:
                 return summarized
             else:
                 # If it's a dict, return a summary
-                if isinstance(news_data, dict):                    # Handle dict format (if news data is wrapped in a dict)
+                if isinstance(news_data, dict):
+                    # Handle dict format (if news data is wrapped in a dict)
                     articles_count = len(news_data.get("articles", [])) if "articles" in news_data else len(news_data)
                     return {"summary": "News data available", "count": articles_count}
                 else:
@@ -1361,7 +1427,31 @@ class LLMService:
                         total_players = len(players)
                         print(f"DEBUG: Draft Projections {position} - Processing ALL {total_players} players using comprehensive approach")
                         
-                        if total_players > 30:
+                        # Special handling for K position (kickers) - always process all players directly since it's a small dataset
+                        if position == "K":
+                            print(f"DEBUG: Draft Projections {position} - Processing all {total_players} kickers directly (ensuring all players included)")
+                            position_data = []
+                            
+                            for rank, player in enumerate(players, 1):
+                                if isinstance(player, dict):
+                                    player_summary = {
+                                        "rank": rank,
+                                        "name": player.get("name", ""),
+                                        "team": player.get("team", ""),
+                                        "position": player.get("position", position),
+                                        "player_id": player.get("playerId", "")
+                                    }
+                                    
+                                    # Include kicker-specific projections
+                                    player_summary["projections"] = {
+                                        "field_goals": player.get("field_goals_made", ""),
+                                        "extra_points": player.get("extra_points_made", ""),
+                                        "field_goal_attempts": player.get("field_goals_attempted", ""),
+                                        "extra_point_attempts": player.get("extra_points_attempted", "")
+                                    }
+                                    
+                                    position_data.append(player_summary)
+                        elif total_players > 30:
                             # Large dataset - use chunked processing
                             print(f"DEBUG: Draft Projections {position} - Large dataset detected, using chunked processing")
                             position_data = self._process_large_player_list_chunked_draft_projections(players, position)
@@ -1759,5 +1849,289 @@ class LLMService:
             modified_ros[position] = combined_players
         
         return modified_ros
+
+    def _prioritize_mentioned_players_in_draft_projections(self, draft_data: Dict[str, Any], mentioned_players: List[str]) -> Dict[str, Any]:
+        """
+        Prioritize mentioned players in draft projections data to ensure they appear in truncated context.
+        This works on the SUMMARIZED data structure (after _summarize_draft_projections processing).
+        
+        Args:
+            draft_data: The summarized draft projections data (with "positions" key containing processed data)
+            mentioned_players: List of player names mentioned in the query
+            
+        Returns:
+            Modified draft projections data with mentioned players prioritized
+        """
+        if not mentioned_players or not isinstance(draft_data, dict):
+            return draft_data
+        
+        print(f"DEBUG: Prioritizing players {mentioned_players} in draft projections data")
+        
+        modified_draft = draft_data.copy()
+        
+        # Handle the summarized structure: {season: 2025, positions: {QB: {count: X, all_players: [...]}, ...}}
+        if "positions" in draft_data:
+            modified_positions = {}
+            
+            for position, position_data in draft_data["positions"].items():
+                if not isinstance(position_data, dict) or "all_players" not in position_data:
+                    modified_positions[position] = position_data
+                    continue
+                    
+                players = position_data["all_players"]
+                if not isinstance(players, list):
+                    modified_positions[position] = position_data
+                    continue
+                
+                # Debug: Log the first few players in K position to see if Lenny Krieg is there
+                if position == "K":
+                    print(f"DEBUG: K position has {len(players)} players")
+                    for i, player in enumerate(players[:10]):  # Show first 10 players
+                        player_name = player.get('name', 'NO_NAME') if isinstance(player, dict) else str(player)
+                        print(f"DEBUG: K player {i+1}: {player_name} ({type(player)})")
+                    # Check if Lenny Krieg is in the full list
+                    krieg_found = any("krieg" in str(player.get('name', '')).lower() for player in players if isinstance(player, dict))
+                    print(f"DEBUG: Lenny Krieg found in K position: {krieg_found}")
+                    
+                prioritized_players = []
+                remaining_players = []
+                
+                # First pass: find mentioned players
+                for player in players:
+                    if not isinstance(player, dict):
+                        continue
+                        
+                    player_name = player.get("name", "").lower()
+                    is_mentioned = False
+                    
+                    # Debug: Check if this is Lenny Krieg specifically
+                    if "krieg" in player_name or "lenny" in player_name:
+                        print(f"DEBUG: Examining potential Lenny Krieg match: '{player.get('name', '')}' in {position}")
+                    
+                    for mentioned_player in mentioned_players:
+                        # Check if any part of the mentioned name matches the player name
+                        mentioned_parts = mentioned_player.lower().split()
+                        
+                        # Debug for Lenny Krieg specifically
+                        if "krieg" in mentioned_player.lower() or "lenny" in mentioned_player.lower():
+                            print(f"DEBUG: Checking '{mentioned_player}' parts {mentioned_parts} against '{player_name}'")
+                        
+                        if any(part in player_name for part in mentioned_parts if len(part) > 2):
+                            print(f"DEBUG: Found mentioned player {mentioned_player} -> {player.get('name', '')} in draft projections {position}")
+                            prioritized_players.append(player)
+                            is_mentioned = True
+                            break
+                            
+                    if not is_mentioned:
+                        remaining_players.append(player)
+                
+                # Combine: mentioned players first, then top performers
+                # For small positions like K, include all players when mentioned players are found
+                if position == "K" and prioritized_players:
+                    max_players_per_position = len(players)  # Include all kickers if mentioned player found
+                else:
+                    max_players_per_position = 30 if prioritized_players else 20  # Increase limit when mentioned players found
+                combined_players = prioritized_players + remaining_players[:max_players_per_position - len(prioritized_players)]
+                
+                if len(combined_players) != len(players):
+                    print(f"DEBUG: Draft projections {position} players reduced from {len(players)} to {len(combined_players)} (prioritized: {len(prioritized_players)})")
+                
+                # Update the position data with prioritized players
+                modified_position_data = position_data.copy()
+                modified_position_data["all_players"] = combined_players
+                modified_positions[position] = modified_position_data
+                
+            modified_draft["positions"] = modified_positions
+            
+        return modified_draft
+
+    def _prioritize_mentioned_players_in_fantasy_rankings(self, rankings_data: Union[List[Dict[str, Any]], Dict[str, Any]], mentioned_players: List[str], endpoint_type: str) -> Union[List[Dict[str, Any]], Dict[str, Any]]:
+        """
+        Prioritize mentioned players in any fantasy rankings data to ensure they appear in truncated context.
+        Works with various Fantasy Nerds API response formats.
+        
+        Args:
+            rankings_data: The fantasy rankings data (list or dict format)
+            mentioned_players: List of player names mentioned in the query
+            endpoint_type: Type of endpoint (e.g., "draft_rankings", "weekly_rankings", "dynasty", etc.)
+            
+        Returns:
+            Modified rankings data with mentioned players prioritized
+        """
+        if not mentioned_players or not rankings_data:
+            return rankings_data
+        
+        print(f"DEBUG: Prioritizing players {mentioned_players} in {endpoint_type} data")
+        
+        # Handle list format (direct player list)
+        if isinstance(rankings_data, list):
+            return self._prioritize_players_in_list(rankings_data, mentioned_players, endpoint_type)
+        
+        # Handle dictionary format
+        elif isinstance(rankings_data, dict):
+            modified_rankings = rankings_data.copy()
+            
+            # Case 1: Position-keyed dictionary (e.g., {"QB": [...], "RB": [...], ...})
+            if any(pos in rankings_data for pos in ["QB", "RB", "WR", "TE", "K", "DEF"]):
+                print(f"DEBUG: Processing position-keyed {endpoint_type} data")
+                
+                for position, players in rankings_data.items():
+                    if not isinstance(players, list) or position in ["season", "metadata"]:
+                        continue
+                        
+                    modified_rankings[position] = self._prioritize_players_in_list(players, mentioned_players, f"{endpoint_type}_{position}")
+            
+            # Case 2: Players in a "players" or "players_sample" key
+            elif "players" in rankings_data and isinstance(rankings_data["players"], list):
+                print(f"DEBUG: Processing players key in {endpoint_type} data")
+                modified_rankings["players"] = self._prioritize_players_in_list(rankings_data["players"], mentioned_players, endpoint_type)
+                
+            elif "players_sample" in rankings_data and isinstance(rankings_data["players_sample"], list):
+                print(f"DEBUG: Processing players_sample key in {endpoint_type} data")
+                modified_rankings["players_sample"] = self._prioritize_players_in_list(rankings_data["players_sample"], mentioned_players, endpoint_type)
+            
+            # Case 3: Data in a "data" key
+            elif "data" in rankings_data:
+                print(f"DEBUG: Processing data key in {endpoint_type} data")
+                modified_rankings["data"] = self._prioritize_mentioned_players_in_fantasy_rankings(rankings_data["data"], mentioned_players, endpoint_type)
+            
+            return modified_rankings
+        
+        return rankings_data
+
+    def _prioritize_players_in_list(self, players_list: List[Dict[str, Any]], mentioned_players: List[str], context: str) -> List[Dict[str, Any]]:
+        """
+        Helper function to prioritize mentioned players in a list of player dictionaries.
+        
+        Args:
+            players_list: List of player dictionaries
+            mentioned_players: List of player names mentioned in the query
+            context: Context string for debugging
+            
+        Returns:
+            Reordered list with mentioned players first
+        """
+        if not players_list or not mentioned_players:
+            return players_list
+            
+        prioritized_players = []
+        remaining_players = []
+        
+        # First pass: find mentioned players
+        for player in players_list:
+            if not isinstance(player, dict):
+                remaining_players.append(player)
+                continue
+                
+            player_name = player.get("name", player.get("display_name", "")).lower()
+            is_mentioned = False
+            
+            for mentioned_player in mentioned_players:
+                # Check if any part of the mentioned name matches the player name
+                mentioned_parts = mentioned_player.lower().split()
+                if any(part in player_name for part in mentioned_parts if len(part) > 2):
+                    print(f"DEBUG: Found mentioned player {mentioned_player} -> {player.get('name', player.get('display_name', ''))} in {context}")
+                    prioritized_players.append(player)
+                    is_mentioned = True
+                    break
+                    
+            if not is_mentioned:
+                remaining_players.append(player)
+        
+        # Combine: mentioned players first, then remaining players
+        max_players = 30  # Reasonable limit for context size
+        combined_players = prioritized_players + remaining_players[:max_players - len(prioritized_players)]
+        
+        if len(combined_players) != len(players_list):
+            print(f"DEBUG: {context} players reduced from {len(players_list)} to {len(combined_players)} (prioritized: {len(prioritized_players)})")
+        
+        return combined_players
+
+    def _prioritize_mentioned_teams_in_standings(self, standings_data: Dict[str, Any], mentioned_teams: List[str]) -> Dict[str, Any]:
+        """
+        Prioritize mentioned teams in standings data to ensure they appear in truncated context.
+        
+        Args:
+            standings_data: The standings data
+            mentioned_teams: List of team names mentioned in the query
+            
+        Returns:
+            Modified standings data with mentioned teams prioritized
+        """
+        if not mentioned_teams or not isinstance(standings_data, dict):
+            return standings_data
+        
+        print(f"DEBUG: Prioritizing teams {mentioned_teams} in standings data")
+        
+        modified_standings = standings_data.copy()
+        
+        if "conferences" in standings_data:
+            modified_conferences = []
+            
+            for conference in standings_data["conferences"]:
+                modified_conference = conference.copy()
+                modified_divisions = []
+                
+                for division in conference.get("divisions", []):
+                    modified_division = division.copy()
+                    teams = division.get("teams", [])
+                    
+                    # Prioritize mentioned teams within each division
+                    prioritized_teams = []
+                    remaining_teams = []
+                    
+                    for team in teams:
+                        team_name = team.get("name", "").lower()
+                        team_alias = team.get("alias", "").lower()
+                        is_mentioned = False
+                        
+                        for mentioned_team in mentioned_teams:
+                            mentioned_lower = mentioned_team.lower()
+                            if (mentioned_lower in team_name or mentioned_lower in team_alias or 
+                                team_name in mentioned_lower or team_alias in mentioned_lower):
+                                print(f"DEBUG: Found mentioned team {mentioned_team} -> {team.get('name', '')} in standings")
+                                prioritized_teams.append(team)
+                                is_mentioned = True
+                                break
+                                
+                        if not is_mentioned:
+                            remaining_teams.append(team)
+                    
+                    # Combine: mentioned teams first, then remaining teams
+                    combined_teams = prioritized_teams + remaining_teams
+                    modified_division["teams"] = combined_teams
+                    modified_divisions.append(modified_division)
+                
+                modified_conference["divisions"] = modified_divisions
+                modified_conferences.append(modified_conference)
+            
+            modified_standings["conferences"] = modified_conferences
+        
+        return modified_standings
+
+    def _extract_team_names_from_query(self, query: str) -> List[str]:
+        """
+        Extract potential team names from the query text.
+        This looks for NFL team names and common abbreviations.
+        """
+        # Common NFL team names and abbreviations
+        nfl_teams = {
+            'bills', 'dolphins', 'patriots', 'jets', 'ravens', 'bengals', 'browns', 'steelers',
+            'texans', 'colts', 'jaguars', 'titans', 'broncos', 'chiefs', 'raiders', 'chargers',
+            'cowboys', 'giants', 'eagles', 'commanders', 'bears', 'lions', 'packers', 'vikings',
+            'falcons', 'panthers', 'saints', 'buccaneers', 'cardinals', 'rams', '49ers', 'seahawks',
+            'buf', 'mia', 'ne', 'nyj', 'bal', 'cin', 'cle', 'pit', 'hou', 'ind', 'jax', 'ten',
+            'den', 'kc', 'lv', 'lac', 'dal', 'nyg', 'phi', 'was', 'chi', 'det', 'gb', 'min',
+            'atl', 'car', 'no', 'tb', 'ari', 'lar', 'sf', 'sea'
+        }
+        
+        query_lower = query.lower()
+        mentioned_teams = []
+        
+        for team in nfl_teams:
+            if team in query_lower.split():  # Exact word match
+                mentioned_teams.append(team)
+        
+        return mentioned_teams
 
 llm_service = LLMService()

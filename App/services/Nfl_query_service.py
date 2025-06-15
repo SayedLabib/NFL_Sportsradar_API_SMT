@@ -41,6 +41,13 @@ class NFLQueryService:
             query_type, params = self._classify_query(query)
             context_data = await self._fetch_relevant_data(query_type, params)
             
+            # Add detected player information to context_data metadata for the LLM service
+            if "player" in params:
+                if "metadata" not in context_data:
+                    context_data["metadata"] = {}
+                context_data["metadata"]["target_player"] = params["player"]
+                print(f"DEBUG: Added target_player to context_data: {params['player']}")
+            
             # Check if there was an error in fetching data
             if "error" in context_data and len(context_data) <= 2:  # Only error and query_type
                 default_sources = self.get_data_sources(query_type)
@@ -98,6 +105,8 @@ class NFLQueryService:
         Returns:
             tuple: A tuple containing the query type and parameters
         """
+        # Store original query for player name detection (before lowercase conversion)
+        original_query = query
         query = query.lower()
         params = {"original_query": query}
         
@@ -153,66 +162,103 @@ class NFLQueryService:
             params["teams"] = teams_found
             
         # Try to extract player names (improved approach)
-        # First, look for player names with position prefixes
+        # First, look for player names with position prefixes (using original query for capitalization)
         prefix_pattern = r'(?:player|quarterback|qb|running back|rb|wide receiver|wr|tight end|te) ([A-Z][a-z]+ [A-Z][a-z]+)'
-        prefix_match = re.search(prefix_pattern, query)
+        prefix_match = re.search(prefix_pattern, original_query, re.IGNORECASE)
         if prefix_match:
             params["player"] = prefix_match.group(1)
         else:
-            # Try to find standalone player names (common NFL players)
-            common_players = [
-                "Patrick Mahomes", "Josh Allen", "Jalen Hurts", "Joe Burrow", "Lamar Jackson",
-                "Justin Herbert", "Trevor Lawrence", "Tua Tagovailoa", "Dak Prescott", "Aaron Rodgers",
-                "Christian McCaffrey", "Austin Ekeler", "Saquon Barkley", "Derrick Henry", "Jonathan Taylor",
-                "Justin Jefferson", "Ja'Marr Chase", "Tyreek Hill", "Stefon Diggs", "CeeDee Lamb",
-                "Travis Kelce", "Mark Andrews", "George Kittle", "T.J. Hockenson", "Dallas Goedert"
-            ]
+            # Enhanced player name detection using pattern matching
+            # Look for two consecutive capitalized words (likely a player name) in original query
+            player_name_pattern = r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b'
+            player_matches = re.findall(player_name_pattern, original_query)
             
-            # Check if any of these names are in the query
-            for player in common_players:
-                if player.lower() in query.lower():
-                    params["player"] = player
-                    break
+            if player_matches:
+                # Take the first match as the player name
+                params["player"] = player_matches[0]
+                print(f"DEBUG: Found player name via regex: {player_matches[0]} in query: {original_query}")
+            else:
+                # Try to find standalone player names (common NFL players)
+                common_players = [
+                    "Patrick Mahomes", "Josh Allen", "Jalen Hurts", "Joe Burrow", "Lamar Jackson",
+                    "Justin Herbert", "Trevor Lawrence", "Tua Tagovailoa", "Dak Prescott", "Aaron Rodgers",
+                    "Christian McCaffrey", "Austin Ekeler", "Saquon Barkley", "Derrick Henry", "Jonathan Taylor",
+                    "Justin Jefferson", "Ja'Marr Chase", "Tyreek Hill", "Stefon Diggs", "CeeDee Lamb",
+                    "Travis Kelce", "Mark Andrews", "George Kittle", "T.J. Hockenson", "Dallas Goedert",
+                    "Lenny Krieg", "Ollie Gordon", "Alex Hale"  # Added to support these specific players
+                ]
                 
-            # Also check for last names of star players if they're unique enough
-            if "player" not in params:
-                last_names = {
-                    "mahomes": "Patrick Mahomes",
-                    "allen": "Josh Allen",
-                    "hurts": "Jalen Hurts",
-                    "burrow": "Joe Burrow",
-                    "jackson": "Lamar Jackson",
-                    "herbert": "Justin Herbert",
-                    "lawrence": "Trevor Lawrence",
-                    "tagovailoa": "Tua Tagovailoa",
-                    "prescott": "Dak Prescott",
-                    "rodgers": "Aaron Rodgers",
-                    "mccaffrey": "Christian McCaffrey",
-                    "ekeler": "Austin Ekeler",
-                    "barkley": "Saquon Barkley",
-                    "henry": "Derrick Henry",
-                    "taylor": "Jonathan Taylor",
-                    "jefferson": "Justin Jefferson",
-                    "chase": "Ja'Marr Chase",
-                    "hill": "Tyreek Hill",
-                    "diggs": "Stefon Diggs",
-                    "lamb": "CeeDee Lamb",
-                    "kelce": "Travis Kelce",
-                    "andrews": "Mark Andrews",
-                    "kittle": "George Kittle",
-                    "hockenson": "T.J. Hockenson",
-                    "goedert": "Dallas Goedert"                }
-                
-                for last_name, full_name in last_names.items():
-                    if last_name in query.lower():
-                        params["player"] = full_name
+                # Check if any of these names are in the query
+                for player in common_players:
+                    if player.lower() in query.lower():
+                        params["player"] = player
+                        print(f"DEBUG: Found common player {player} in query: {original_query}")
                         break
+                    
+                # Also check for last names of star players if they're unique enough
+                if "player" not in params:
+                    last_names = {
+                        "mahomes": "Patrick Mahomes",
+                        "allen": "Josh Allen",
+                        "hurts": "Jalen Hurts",
+                        "burrow": "Joe Burrow",
+                        "jackson": "Lamar Jackson",
+                        "herbert": "Justin Herbert",
+                        "lawrence": "Trevor Lawrence",
+                        "tagovailoa": "Tua Tagovailoa",
+                        "prescott": "Dak Prescott",
+                        "rodgers": "Aaron Rodgers",
+                        "mccaffrey": "Christian McCaffrey",
+                        "ekeler": "Austin Ekeler",
+                        "barkley": "Saquon Barkley",
+                        "henry": "Derrick Henry",
+                        "taylor": "Jonathan Taylor",
+                        "jefferson": "Justin Jefferson",
+                        "chase": "Ja'Marr Chase",
+                        "hill": "Tyreek Hill",
+                        "diggs": "Stefon Diggs",
+                        "lamb": "CeeDee Lamb",
+                        "kelce": "Travis Kelce",
+                        "andrews": "Mark Andrews",
+                        "kittle": "George Kittle",
+                        "hockenson": "T.J. Hockenson",
+                        "goedert": "Dallas Goedert",
+                        "krieg": "Lenny Krieg",
+                        "gordon": "Ollie Gordon",
+                        "hale": "Alex Hale"
+                    }
+                    
+                    for last_name, full_name in last_names.items():
+                        if last_name in query.lower():
+                            params["player"] = full_name
+                            print(f"DEBUG: Found player by last name {last_name} -> {full_name} in query: {original_query}")
+                            break
         
         # Classify query type - check specific terms before general ones
         
         # Check for draft projections FIRST (before general "projections" check)
         if any(term in query for term in ["draft projection", "draft projections", "draft_projection", "draft_projections"]):
             return "draft_projections", params
+            
+        # Check if this is a player-specific query that should check multiple endpoints
+        if "player" in params:
+            print(f"DEBUG: Player detected in params: {params['player']}")
+            # If a player is mentioned, default to player_rankings which will check multiple sources
+            if any(term in query for term in ["ranking", "rank", "best", "top", "stats", "statistics", "projections", "projection"]):
+                print(f"DEBUG: Returning player_rankings for query: {original_query}")
+                return "player_rankings", params
+            elif any(term in query for term in ["rest of season", "ros", "rest-of-season", "remaining games", "future projections", "vorp", "value over replacement"]):
+                print(f"DEBUG: Returning ros_projections for query: {original_query}")
+                return "ros_projections", params
+            elif any(term in query for term in ["draft", "drafting", "draft pick", "adp", "average draft position"]):
+                print(f"DEBUG: Returning draft_rankings for query: {original_query}")
+                return "draft_rankings", params
+            else:
+                # For any other player query, use comprehensive player search
+                print(f"DEBUG: Returning player_search for query: {original_query}")
+                return "player_search", params
+        else:
+            print(f"DEBUG: No player detected in params for query: {original_query}")
             
         # Check for general rankings/projections (excluding draft projections already handled above)
         if any(term in query for term in ["ranking", "rank", "best", "top", "stats", "statistics"]) or \
@@ -345,6 +391,43 @@ class NFLQueryService:
                     combined_data["adp"] = await self.api_client.get_adp(format=format_type)
                 except Exception as e:
                     print(f"Error fetching ADP data: {e}")
+                
+            elif query_type == "player_search":
+                # Comprehensive player search across multiple endpoints
+                player_name = params.get("player")
+                if player_name:
+                    combined_data["metadata"] = {"target_player": player_name, "search_type": "comprehensive"}
+                    
+                    # Check draft projections first
+                    try:
+                        combined_data["draft_projections"] = await self.api_client.get_draft_projections()
+                    except Exception as e:
+                        print(f"Error fetching draft projections: {e}")
+                    
+                    # Check draft rankings
+                    try:
+                        combined_data["draft_rankings"] = await self.api_client.get_draft_rankings("std")
+                    except Exception as e:
+                        print(f"Error fetching draft rankings: {e}")
+                    
+                    # Check weekly rankings
+                    try:
+                        combined_data["weekly_rankings"] = await self.api_client.get_weekly_rankings()
+                    except Exception as e:
+                        print(f"Error fetching weekly rankings: {e}")
+                    
+                    # Check ROS projections
+                    try:
+                        combined_data["ros_projections"] = await self.api_client.get_rest_of_season_projections()
+                    except Exception as e:
+                        print(f"Error fetching ROS projections: {e}")
+                    
+                    # Get league structure for team context
+                    combined_data["league"] = await self.api_client.get_teams()
+                else:
+                    # Fallback to general query if no player specified
+                    combined_data["league"] = await self.api_client.get_teams()
+                    combined_data["standings"] = await self.api_client.get_standings()
                 
             elif query_type == "matchups":
                 # Get schedule data
@@ -570,6 +653,7 @@ class NFLQueryService:
         # Map query types to the actual Fantasy Nerds API endpoints used
         data_sources = {
             "player_rankings": ["/nfl/teams", "/nfl/draft-rankings", "/nfl/weekly-rankings"],
+            "player_search": ["/nfl/draft-projections", "/nfl/draft-rankings", "/nfl/weekly-rankings", "/nfl/ros", "/nfl/teams"],
             "matchups": ["/nfl/schedule", "/nfl/teams"],
             "injuries": ["/nfl/injuries", "/nfl/teams", "/nfl/news"],
             "schedule": ["/nfl/schedule", "/nfl/teams"],
