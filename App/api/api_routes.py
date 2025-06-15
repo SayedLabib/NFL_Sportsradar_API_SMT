@@ -212,7 +212,7 @@ async def get_fantasy_leaders(format: str = "std", position: str = "ALL", week: 
     """
     return await nfl_service.get_fantasy_leaders(format, position, week)
 
-@router.get("/players", response_model=dict, summary="Get NFL Players")
+@router.get("/players", summary="Get NFL Players")
 @with_cache(timedelta(hours=24))
 async def get_players(include_inactive: bool = False):
     """
@@ -220,7 +220,17 @@ async def get_players(include_inactive: bool = False):
     
     - **include_inactive**: Set to True to include inactive players
     """
-    return await nfl_service.get_players(include_inactive)
+    try:
+        from fastapi.responses import JSONResponse
+        data = await nfl_service.get_players(include_inactive)
+        
+        # Return the data with proper JSON response handling for large datasets
+        return JSONResponse(content=data)
+    except Exception as e:
+        import traceback
+        print(f"Error in get_players: {str(e)}")
+        print(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Error retrieving players data: {str(e)}")
 
 @router.get("/add-drops", response_model=dict, summary="Get Player Adds and Drops")
 @with_cache(timedelta(hours=3))
