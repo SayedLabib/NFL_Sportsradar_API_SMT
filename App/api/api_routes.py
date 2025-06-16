@@ -1,6 +1,6 @@
-# filepath: /home/fuad/My_Works/NFL_Sportsradar_API_SMT/App/api/api_routes.py
+
 from fastapi import APIRouter, HTTPException, Path, Depends
-from typing import Optional, List
+from typing import Optional, List, Dict, Any, Union
 from datetime import datetime, timedelta
 import functools
 
@@ -77,7 +77,15 @@ async def get_standings():
     """
     Retrieve the current regular-season standings for all NFL teams including their rankings within their division and conference.
     """
-    return await nfl_service.get_standings()
+    try:
+        result = await nfl_service.get_standings()
+        # Ensure we always return a dictionary
+        if not isinstance(result, dict):
+            return {"standings": {}, "message": "No standings data available"}
+        return result
+    except Exception as e:
+        print(f"Error in standings endpoint: {str(e)}")
+        return {"standings": {}, "message": f"Error retrieving standings data: {str(e)}"}
 
 @router.get("/injuries", response_model=dict, summary="Get Injury Reports")
 @with_cache(timedelta(hours=6))
@@ -221,11 +229,10 @@ async def get_players(include_inactive: bool = False):
     - **include_inactive**: Set to True to include inactive players
     """
     try:
-        from fastapi.responses import JSONResponse
         data = await nfl_service.get_players(include_inactive)
         
-        # Return the data with proper JSON response handling for large datasets
-        return JSONResponse(content=data)
+        # Return the data directly
+        return data
     except Exception as e:
         import traceback
         print(f"Error in get_players: {str(e)}")
@@ -334,3 +341,5 @@ async def ask_nfl_question(query: NFLQuery):
     """
     response = await nfl_query_service.process_query(query.query)
     return response
+
+

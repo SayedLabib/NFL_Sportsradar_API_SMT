@@ -37,9 +37,30 @@ class NFLService:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.get(url, params=query_params)
                 response.raise_for_status()  # Raise an exception for HTTP errors
-                return response.json()
+                data = response.json()
+                
+                # Handle empty list responses for specific endpoints
+                if isinstance(data, list) and not data:
+                    # Return appropriate empty structure based on endpoint
+                    if endpoint == "standings":
+                        return {"standings": {}, "message": "No standings data available"}
+                    elif endpoint in ["draft-rankings", "player-tiers", "auction-values", "adp", "best-ball"]:
+                        return {endpoint.replace("-", "_"): {}}
+                    elif endpoint == "teams":
+                        return {"teams": []}
+                    # Default empty structure
+                    return {endpoint.replace("-", "_"): {}}
+                    
+                return data
         except httpx.TimeoutException:
-            raise HTTPException(status_code=408, detail=f"Request to {url} timed out")
+            error_msg = f"Request to {url} timed out"
+            print(f"API timeout for {endpoint}: {error_msg}")
+            
+            # For specific endpoints, return structured empty responses instead of errors
+            if endpoint == "standings":
+                return {"standings": {}, "message": error_msg}
+                
+            raise HTTPException(status_code=408, detail=error_msg)
         except httpx.HTTPStatusError as e:
             status_code = e.response.status_code
             if status_code == 401:
@@ -52,9 +73,23 @@ class NFLService:
                 detail = "Rate limit exceeded"
             else:
                 detail = f"HTTP error {status_code}: {str(e)}"
+            
+            print(f"API error for {endpoint}: {detail}")
+            
+            # For specific endpoints, return structured empty responses instead of errors
+            if endpoint == "standings":
+                return {"standings": {}, "message": detail}
+                
             raise HTTPException(status_code=status_code, detail=detail)
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+            error_msg = f"Unexpected error: {str(e)}"
+            print(f"API unexpected error for {endpoint}: {error_msg}")
+            
+            # For specific endpoints, return structured empty responses instead of errors
+            if endpoint == "standings":
+                return {"standings": {}, "message": error_msg}
+                
+            raise HTTPException(status_code=500, detail=error_msg)
             
     async def get_teams(self):
         """
@@ -82,7 +117,17 @@ class NFLService:
         Returns:
             dict: Season standings data
         """
-        return await self.get_data("standings")
+        try:
+            data = await self.get_data("standings")
+            # Handle case where empty list is returned instead of dict
+            if isinstance(data, list) and len(data) == 0:
+                # Return an empty dict with proper structure instead of an empty list
+                return {"standings": {}, "message": "No standings data available"}
+            return data
+        except Exception as e:
+            print(f"Error fetching standings data: {str(e)}")
+            # Return a properly structured empty response rather than allowing error to propagate
+            return {"standings": {}, "message": f"Error retrieving standings: {str(e)}"}
 
     async def get_weekly_injuries(self, season=None, week=None):
         """
@@ -379,5 +424,89 @@ class NFLService:
             dict: ROS projections data
         """
         return await self.get_data("ros")
+    
+    async def search_player_by_name(self, player_name: str, include_inactive: bool = False):
+        """
+        Search for a specific player by name (case-insensitive, fuzzy matching)
+        
+        Args:
+            player_name (str): The name of the player to search for
+            include_inactive (bool): Whether to include inactive players
+            
+        Returns:
+            dict: Player data if found, None if not found
+        """
+        # Get all players
+        players_data = await self.get_players(include_inactive)
+        
+        if not players_data or not isinstance(players_data, list):
+            return None
+            
+        player_name_lower = player_name.lower().strip()
+        
+        # First try exact match
+        for player in players_data:
+            if isinstance(player, dict) and 'name' in player:
+                if player['name'].lower() == player_name_lower:
+                    return player
+        
+        # Then try partial match (contains)
+        for player in players_data:
+            if isinstance(player, dict) and 'name' in player:
+                if player_name_lower in player['name'].lower():
+                    return player
+        
+        # Finally try reverse partial match (player name contains search term)
+        for player in players_data:
+            if isinstance(player, dict) and 'name' in player:
+                player_name_parts = player['name'].lower().split()
+                search_parts = player_name_lower.split()
+                
+                # Check if any search part matches any player name part
+                for search_part in search_parts:
+                    for player_part in player_name_parts:
+                        if search_part in player_part or player_part in search_part:
+                            return player
+        
+        return None
+
+    async def get_player_detailed_info(self, player_name: str, include_inactive: bool = False):
+        """
+        Get comprehensive player information including all available data points
+        
+        Args:
+            player_name (str): The name of the player to search for
+            include_inactive (bool): Whether to include inactive players
+            
+        Returns:
+            dict: Comprehensive player information with metadata
+        """
+        player_data = await self.search_player_by_name(player_name, include_inactive)
+        
+        if not player_data:
+            return {
+                "error": f"Player '{player_name}' not found",
+                "searched_name": player_name,
+                "suggestions": "Try using the player's full name or check spelling"
+            }
+        
+        # Structure the comprehensive player information
+        detailed_info = {
+            "player_found": True,
+            "searched_name": player_name,
+            "player_data": player_data,
+            "metadata": {
+                "data_source": "Fantasy Nerds NFL API",
+                "search_type": "player_detail",
+                "timestamp": self._get_current_timestamp()
+            }
+        }
+        
+        return detailed_info
+    
+    def _get_current_timestamp(self):
+        """Get current timestamp for metadata"""
+        from datetime import datetime
+        return datetime.now().isoformat()
 
 nfl_service = NFLService()

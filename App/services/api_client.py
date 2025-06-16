@@ -174,13 +174,41 @@ class NFLApiClient:
             url = f"{self.base_url}{endpoint}"
             response = await self.client.get(url, params=params)
             response.raise_for_status()
-            return response.json()
+            data = response.json()
+            
+            # Handle specifically the case of /standings endpoint to ensure it returns a dict
+            if endpoint == "/nfl/standings" and (data is None or (isinstance(data, list) and len(data) == 0)):
+                return {"standings": {}, "message": "No standings data available"}
+            
+            # For any list responses, ensure we have at least an empty structure
+            if isinstance(data, list) and not data:
+                if "standings" in endpoint:
+                    return {"standings": {}}
+                elif "players" in endpoint:
+                    return {"players": []}
+                # For other endpoints, default to an empty dict with endpoint info
+                return {endpoint.replace("/nfl/", "").replace("-", "_"): {}}
+                
+            return data
         except httpx.HTTPStatusError as e:
             status_code = e.response.status_code
             detail = f"API error {status_code}: {str(e)}"
+            
+            # For specific endpoints, return structured empty responses instead of errors
+            if "/nfl/standings" in endpoint:
+                print(f"Error fetching standings: {detail}")
+                return {"standings": {}, "message": detail}
+            
             raise HTTPException(status_code=status_code, detail=detail)
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Error accessing API: {str(e)}")
+            error_msg = f"Error accessing API: {str(e)}"
+            print(f"API client error for {endpoint}: {error_msg}")
+            
+            # For specific endpoints, return structured empty responses instead of errors
+            if "/nfl/standings" in endpoint:
+                return {"standings": {}, "message": error_msg}
+                
+            raise HTTPException(status_code=500, detail=error_msg)
 
     async def close(self):
         """Close the HTTP client connection"""

@@ -77,18 +77,22 @@ class LLMService:
             "NEVER respond with 'I don't have enough information' or 'I can't answer that.' Instead, provide the best possible answer using available data or your knowledge.\n\n"
             "Response strategy:\n"
             "1. FIRST PRIORITY: Use the Fantasy Nerds data when available - cite specific statistics, rankings, and metrics from this data\n"
-            "2. SECOND PRIORITY: When Fantasy Nerds data is limited or doesn't contain information requested:\n"
-            "   a. Clearly state: 'The specific data requested isn't available in the Fantasy Nerds data. However, I can provide analysis based on general NFL knowledge.'\n"
-            "   b. Provide comprehensive reasoning and knowledge about the topic to give the user helpful information\n"
-            "   c. Draw on historical NFL trends, player performance patterns, and strategic football concepts\n"
-            "   d. Make it clear which parts of your answer are from Fantasy Nerds data vs. general knowledge\n"
+            "2. SECOND PRIORITY: When Fantasy Nerds data is limited, doesn't contain requested information, or can't be retrieved:\n"
+            "   a. AUTOMATICALLY USE YOUR GENERAL KNOWLEDGE without mentioning failures or missing data\n"
+            "   b. For topics like team rosters, player counts, team statistics, simply answer from your general knowledge\n"
+            "   c. Provide comprehensive reasoning and knowledge about the topic to give the user helpful information\n"
+            "   d. Draw on historical NFL trends, player performance patterns, and strategic football concepts\n"
+            "   e. Make it clear which parts of your answer are from Fantasy Nerds data vs. general knowledge\n"
             "3. Identify trends and insights that are directly observable in the data\n"
             "4. Make logical inferences that are clearly supported by the available data\n"
-            "5. For player-specific queries, if the player isn't found in Fantasy Nerds data:\n"
-            "   a. State: 'This player doesn't appear in the current Fantasy Nerds data. Here's what I know about them:'\n"
-            "   b. Provide detailed player analysis including position, team, playing style, recent performance, and fantasy relevance\n"
+            "5. For player-specific queries, if the player isn't found in Fantasy Nerds data or when asked for biographical information:\n"
+            "   a. State: 'This player information isn't available in the current Fantasy Nerds data. Here's what I know about them:'\n"
+            "   b. ALWAYS answer using your general knowledge when asked about biographical information such as college, stats, weight, height, hometown, or any other personal details\n"
+            "   c. Provide comprehensive player information including position, team, college background, physical attributes (height/weight), hometown, playing style, career highlights, and other relevant biographical details\n"
+            "   d. Be specific and detailed in your general knowledge responses about player information - don't hesitate to provide complete biographical answers\n"
             "6. For fantasy advice queries, prioritize Fantasy Nerds data but supplement with detailed strategy knowledge when helpful\n"
-            "7. Include a line at the end that says: 'Primary data sourced from Fantasy Nerds API: ' followed by a list of "
+            "7. For questions about team composition, roster size, or number of players, always provide accurate information from your general knowledge if data isn't available\n"
+            "8. Include a line at the end that says: 'Primary data sourced from Fantasy Nerds API: ' followed by a list of "
             f"the specific endpoints that were used: {endpoints_str}\n"
             "Remember to always be transparent about the source of your information (Fantasy Nerds API vs general knowledge)."
         )
@@ -112,7 +116,8 @@ class LLMService:
                 "For any rankings or statistics, cite specific numbers and player names exactly as they appear in the data. "
                 "IMPORTANT: When discussing player rankings, explicitly name the players from the data with their exact ranks, teams, and other available details. "
                 "Do not use placeholders like [Player Name]. When answering questions about specific players, extract their information from the draft_rankings or weekly_rankings sections. "
-                "If you can't find a specific player in the data, clearly state: 'This player doesn't appear in the current Fantasy Nerds data' and then provide general information about the player."
+                "If you can't find a specific player in the data, clearly state: 'This player information isn't available in the current Fantasy Nerds data' and then provide a detailed answer using your general knowledge.\n\n"
+                "FOR BIOGRAPHICAL QUERIES: When asked about player biographical information like college, stats, weight, height, hometown, or any other personal details not in the Fantasy Nerds data, ALWAYS provide detailed information from your general knowledge. Be comprehensive in your response about player backgrounds and personal attributes."
             )
             
             messages.append({"role": "system", "content": data_instructions})
@@ -235,10 +240,69 @@ class LLMService:
             if e.response.status_code == 429:
                 return "Rate limit exceeded. Please try again later."
             print(f"Error generating response: {e}")
-            return f"Sorry, I couldn't generate a response: {str(e)}"
+            
+            # Create a fallback message for API errors that provides a helpful answer from general knowledge
+            fallback_prompt = (
+                "I notice you're asking about NFL information. While I couldn't retrieve the specific data "
+                "from the Fantasy Nerds API at this moment, I'll answer your question based on my general knowledge about the NFL. "
+                f"Here's what I know about your question: '{query}'"
+            )
+            
+            try:
+                # Attempt a fallback call with just general knowledge guidance
+                fallback_messages = [
+                    {"role": "system", "content": "You are an NFL analytics expert. The Fantasy Nerds API data is currently unavailable. "
+                     "Use your general NFL knowledge to provide a helpful, informative response. Always be specific and detailed in your answer. "
+                     "If the query is about team roster size, player biographical information, team statistics, or any other NFL facts, "
+                     "provide accurate information from your general knowledge. Never say you don't have enough information."},
+                    {"role": "user", "content": fallback_prompt}
+                ]
+                
+                fallback_response = await client.post(
+                    self.base_url,
+                    headers=headers,
+                    json={
+                        "model": self.model,
+                        "messages": fallback_messages,
+                        "temperature": 0.7,
+                        "max_tokens": 800,
+                    },
+                )
+                fallback_response.raise_for_status()
+                fallback_result = fallback_response.json()
+                return fallback_result['choices'][0]['message']['content']
+            except Exception as fallback_error:
+                print(f"Fallback response also failed: {fallback_error}")
+                return "I apologize, but I'm currently unable to access NFL data. Please try your question again later."
         except Exception as e:
             print(f"Error generating response: {e}")
-            return f"Sorry, I couldn't generate a response: {str(e)}"
+            
+            # Create a fallback message for general errors
+            try:
+                # Create simple fallback messages without context data
+                fallback_messages = [
+                    {"role": "system", "content": "You are an NFL analytics expert. Answer the following NFL question using your general knowledge. "
+                     "Be comprehensive and accurate. Never say you don't have enough information."},
+                    {"role": "user", "content": query}
+                ]
+                
+                async with httpx.AsyncClient(timeout=60.0) as fallback_client:
+                    fallback_response = await fallback_client.post(
+                        self.base_url,
+                        headers=headers,
+                        json={
+                            "model": self.model,
+                            "messages": fallback_messages,
+                            "temperature": 0.7,
+                            "max_tokens": 800,
+                        },
+                    )
+                    fallback_response.raise_for_status()
+                    fallback_result = fallback_response.json()
+                    return fallback_result['choices'][0]['message']['content']
+            except Exception as fallback_error:
+                print(f"Fallback response also failed: {fallback_error}")
+                return "I apologize, but I'm having trouble accessing NFL data right now. Please try your question again later."
 
     def _summarize_context_data(self, data: Dict[str, Any], mentioned_players: List[str] = None, mentioned_teams: List[str] = None) -> Dict[str, Any]:
         """
@@ -349,6 +413,10 @@ class LLMService:
             if "weekly_projections" in data:
                 summarized["weekly_projections"] = self._summarize_fantasy_rankings(data["weekly_projections"])
                 
+            # Handle player details data from NFL players endpoint
+            if "player_details" in data:
+                summarized["player_details"] = self._summarize_player_details(data["player_details"])
+            
             # Handle defensive rankings data
             if "defense_rankings" in data:
                 summarized["defense_rankings"] = self._summarize_fantasy_rankings(data["defense_rankings"])
@@ -2133,5 +2201,91 @@ class LLMService:
                 mentioned_teams.append(team)
         
         return mentioned_teams
+
+    def _summarize_player_details(self, player_details_data: Union[Dict[str, Any], List[Dict[str, Any]]]) -> Dict[str, Any]:
+        """
+        Summarize detailed player information from the NFL players endpoint.
+        This handles the specific format returned by get_player_detailed_info.
+        """
+        try:
+            if isinstance(player_details_data, dict):
+                # Check if it's an error response
+                if "error" in player_details_data:
+                    return {
+                        "error": player_details_data["error"],
+                        "player_found": False
+                    }
+                
+                # Check if it contains player_data (expected format)
+                if "player_data" in player_details_data:
+                    player_data = player_details_data["player_data"]
+                    metadata = player_details_data.get("metadata", {})
+                    
+                    # Summarize the first few players if it's a list
+                    if isinstance(player_data, list) and len(player_data) > 0:
+                        summarized_players = []
+                        for i, player in enumerate(player_data[:5]):  # Limit to first 5 players
+                            summarized_player = {
+                                "name": player.get("name", "Unknown"),
+                                "position": player.get("position", "N/A"),
+                                "team": player.get("team", "N/A"),
+                                "jersey_number": player.get("jersey", "N/A"),
+                                "height": player.get("height", "N/A"),
+                                "weight": player.get("weight", "N/A"),
+                                "age": player.get("age", "N/A"),
+                                "experience": player.get("experience", "N/A"),
+                                "college": player.get("college", "N/A"),
+                                "status": player.get("status", "N/A")
+                            }
+                            # Add any additional relevant stats if present
+                            if "stats" in player:
+                                summarized_player["stats"] = player["stats"]
+                            
+                            summarized_players.append(summarized_player)
+                        
+                        return {
+                            "player_found": True,
+                            "players": summarized_players,
+                            "total_players_found": len(player_data),
+                            "search_details": metadata
+                        }
+                    
+                    # If single player object
+                    elif isinstance(player_data, dict):
+                        return {
+                            "player_found": True,
+                            "player": {
+                                "name": player_data.get("name", "Unknown"),
+                                "position": player_data.get("position", "N/A"),
+                                "team": player_data.get("team", "N/A"),
+                                "jersey_number": player_data.get("jersey", "N/A"),
+                                "height": player_data.get("height", "N/A"),
+                                "weight": player_data.get("weight", "N/A"),
+                                "age": player_data.get("age", "N/A"),
+                                "experience": player_data.get("experience", "N/A"),
+                                "college": player_data.get("college", "N/A"),
+                                "status": player_data.get("status", "N/A"),
+                                "stats": player_data.get("stats", {})
+                            },
+                            "search_details": metadata
+                        }
+                
+                # Direct player data format
+                return {
+                    "player_found": True,
+                    "player": {
+                        "name": player_details_data.get("name", "Unknown"),
+                        "position": player_details_data.get("position", "N/A"),
+                        "team": player_details_data.get("team", "N/A"),
+                        "jersey_number": player_details_data.get("jersey", "N/A"),
+                        "additional_info": "Direct player data format"
+                    }
+                }
+            
+            return {"error": "Unexpected player details format", "player_found": False}
+            
+        except Exception as e:
+            print(f"Error summarizing player details: {str(e)}")
+            return {"error": f"Failed to summarize player details: {str(e)}", "player_found": False}
 
 llm_service = LLMService()

@@ -392,11 +392,33 @@ class NFLQueryService:
                 except Exception as e:
                     print(f"Error fetching ADP data: {e}")
                 
+                # If a specific player is mentioned, get their detailed information
+                player_name = params.get("player")
+                if player_name:
+                    try:
+                        from App.services.nfl_service import nfl_service
+                        player_details = await nfl_service.get_player_detailed_info(player_name, include_inactive=False)
+                        combined_data["player_details"] = player_details
+                        print(f"DEBUG: Retrieved player details for {player_name} in player_rankings")
+                    except Exception as e:
+                        print(f"Error fetching player details in player_rankings: {e}")
+                        combined_data["player_details"] = {"error": f"Could not fetch player details: {str(e)}"}
+                
             elif query_type == "player_search":
                 # Comprehensive player search across multiple endpoints
                 player_name = params.get("player")
                 if player_name:
                     combined_data["metadata"] = {"target_player": player_name, "search_type": "comprehensive"}
+                    
+                    # Get detailed player information from NFL players endpoint
+                    try:
+                        from App.services.nfl_service import nfl_service
+                        player_details = await nfl_service.get_player_detailed_info(player_name, include_inactive=False)
+                        combined_data["player_details"] = player_details
+                        print(f"DEBUG: Retrieved player details for {player_name}")
+                    except Exception as e:
+                        print(f"Error fetching player details: {e}")
+                        combined_data["player_details"] = {"error": f"Could not fetch player details: {str(e)}"}
                     
                     # Check draft projections first
                     try:
@@ -619,6 +641,18 @@ class NFLQueryService:
                     combined_data["weekly_rankings"] = await self.api_client.get_weekly_rankings()
                 except Exception as e:
                     print(f"Error fetching weekly rankings: {e}")
+                
+                # If a specific player is mentioned, get their detailed information
+                player_name = params.get("player")
+                if player_name:
+                    try:
+                        from App.services.nfl_service import nfl_service
+                        player_details = await nfl_service.get_player_detailed_info(player_name, include_inactive=False)
+                        combined_data["player_details"] = player_details
+                        print(f"DEBUG: Retrieved player details for {player_name} in ros_projections")
+                    except Exception as e:
+                        print(f"Error fetching player details in ros_projections: {e}")
+                        combined_data["player_details"] = {"error": f"Could not fetch player details: {str(e)}"}
                     
             else:  # General query
                 # For general queries, provide league structure and standings
